@@ -119,10 +119,28 @@ struct SettingsView: View {
                 Stepper("Retry count: \(settings.retryCount)", value: $settings.retryCount, in: 0...10)
                 TextField("Global speed limit bytes/sec (0 = unlimited)", value: $settings.globalSpeedLimitBytesPerSecond, format: .number)
             }
-            Section("Browser Integration") { Toggle("Show floating button", isOn: $settings.showFloatingButton); TextField("Blocklist domains, comma separated", text: Binding(get: { settings.domainBlocklist.joined(separator: ",") }, set: { settings.domainBlocklist = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } })) }
+            Section("Browser Integration") {
+                Toggle("Show floating button", isOn: $settings.showFloatingButton)
+                HStack {
+                    TextField("Cookies Profile Path", text: $settings.firefoxCookiesPath)
+                    Button("Choose…", action: chooseFirefoxCookiesPath)
+                    Button("Default") { settings.firefoxCookiesPath = defaultFirefoxCookiesPath() }
+                }
+                Text("Accepts a browser Profiles folder, a profile folder, or cookies.sqlite.").font(.caption).foregroundStyle(.secondary)
+                TextField("Blocklist domains, comma separated", text: Binding(get: { settings.domainBlocklist.joined(separator: ",") }, set: { settings.domainBlocklist = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } }))
+            }
             HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(24).frame(width: 520)
+        .padding(24).frame(width: 640)
+    }
+
+    private func chooseFirefoxCookiesPath() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose browser Profiles folder, profile folder, or cookies.sqlite"
+        if panel.runModal() == .OK, let url = panel.url { settings.firefoxCookiesPath = url.path }
     }
 }
 

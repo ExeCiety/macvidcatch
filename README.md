@@ -83,7 +83,7 @@ To load the Firefox extension prototype temporarily:
 
 For video and HLS media sent by a browser extension, MacVidCatch runs `yt-dlp` with the originating page referer, matching browser user agent, matching Chrome or Firefox cookies, and `aria2c` as the parallel downloader. HLS playlists are remuxed to MP4 through `ffmpeg` after download.
 
-Make sure you are already signed in with the same Chrome or Firefox profile when downloading media that requires authorized access. MacVidCatch does not bypass DRM, paywalls, encryption, or access controls.
+Make sure you are already signed in with the same Chrome or Firefox profile when downloading media that requires authorized access. If Firefox is installed outside the standard profile location, set **Settings → Browser Integration → Firefox cookies/profile path** to the Firefox `Profiles` folder, a specific profile folder, or `cookies.sqlite`. MacVidCatch does not bypass DRM, paywalls, encryption, or access controls.
 
 ## Logging And Data
 

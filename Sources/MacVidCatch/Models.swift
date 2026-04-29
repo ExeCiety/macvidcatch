@@ -112,8 +112,55 @@ struct AppSettings: Codable, Equatable {
     var globalSpeedLimitBytesPerSecond: Int64 = 0
     var showNotifications: Bool = true
     var showFloatingButton: Bool = true
+    var firefoxCookiesPath: String = defaultFirefoxCookiesPath()
     var domainAllowlist: [String] = []
     var domainBlocklist: [String] = []
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        defaultDownloadFolder = try container.decodeIfPresent(String.self, forKey: .defaultDownloadFolder) ?? defaultDownloadFolder
+        maxSimultaneousDownloads = try container.decodeIfPresent(Int.self, forKey: .maxSimultaneousDownloads) ?? maxSimultaneousDownloads
+        maxConnectionsPerFile = try container.decodeIfPresent(Int.self, forKey: .maxConnectionsPerFile) ?? maxConnectionsPerFile
+        retryCount = try container.decodeIfPresent(Int.self, forKey: .retryCount) ?? retryCount
+        retryIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .retryIntervalSeconds) ?? retryIntervalSeconds
+        globalSpeedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .globalSpeedLimitBytesPerSecond) ?? globalSpeedLimitBytesPerSecond
+        showNotifications = try container.decodeIfPresent(Bool.self, forKey: .showNotifications) ?? showNotifications
+        showFloatingButton = try container.decodeIfPresent(Bool.self, forKey: .showFloatingButton) ?? showFloatingButton
+        firefoxCookiesPath = migratedCookiesProfilePath(try container.decodeIfPresent(String.self, forKey: .firefoxCookiesPath))
+        domainAllowlist = try container.decodeIfPresent([String].self, forKey: .domainAllowlist) ?? domainAllowlist
+        domainBlocklist = try container.decodeIfPresent([String].self, forKey: .domainBlocklist) ?? domainBlocklist
+    }
+}
+
+func migratedCookiesProfilePath(_ path: String?) -> String {
+    let legacyDefault = "~/Library/Application Support/Firefox/Profiles"
+    guard let path, !path.isEmpty, path != legacyDefault else { return defaultFirefoxCookiesPath() }
+    return path
+}
+
+func defaultFirefoxCookiesPath() -> String {
+    let candidates = [
+        "~/Library/Application Support/Firefox/Profiles",
+        "~/Library/Application Support/Firefox Developer Edition/Profiles",
+        "~/Library/Application Support/LibreWolf/Profiles",
+        "~/Library/Application Support/Waterfox/Profiles",
+        "~/Library/Application Support/Google/Chrome/Default",
+        "~/Library/Application Support/Google/Chrome/Profile 1",
+        "~/Library/Application Support/Chromium/Default",
+        "~/Library/Application Support/Microsoft Edge/Default",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/Default"
+    ].map { ($0 as NSString).expandingTildeInPath }
+
+    let fileManager = FileManager.default
+    return candidates.first { path in
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return false }
+        return fileManager.fileExists(atPath: URL(fileURLWithPath: path).appendingPathComponent("cookies.sqlite").path)
+            || fileManager.fileExists(atPath: URL(fileURLWithPath: path).appendingPathComponent("Cookies").path)
+            || ((try? fileManager.contentsOfDirectory(atPath: path))?.isEmpty == false)
+    } ?? "~/Library/Application Support/Firefox/Profiles"
 }
 
 struct ExtensionPayload: Codable {

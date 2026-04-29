@@ -266,7 +266,7 @@ final class DownloadEngine: NSObject, ObservableObject {
             throw NSError(domain: "Download", code: Int(result.status), userInfo: [NSLocalizedDescriptionKey: message])
         }
 
-        updateCompletedYtDlpJob(job)
+        try await updateCompletedYtDlpJob(job)
     }
 
     private func runYtDlp(executable: URL, arguments: [String], jobID: UUID) async throws -> (output: String, status: Int32) {
@@ -320,22 +320,25 @@ final class DownloadEngine: NSObject, ObservableObject {
         guard isHLSPlaylist(job.sourceUrl) || destination.pathExtension.lowercased() == "m3u8" else {
             return destination.path
         }
-        return destination.deletingPathExtension().appendingPathExtension("%(ext)s").path
+        return hlsTransportStreamURL(for: destination).path
     }
 
     private func ytDlpArguments(for job: DownloadJob, outputTemplate: String, youtubeFallback: Bool = false, youtubeForbiddenFallback: Bool = false) -> [String] {
         let browser = ytDlpCookieBrowser(for: job)
-        var arguments = [
-            "--cookies-from-browser", browser,
+        let cookieArguments = ytDlpCookieArguments(for: job, browser: browser, cookiesProfilePath: store.settings.firefoxCookiesPath)
+        var arguments = cookieArguments + [
             "--user-agent", defaultBrowserUserAgent(for: browser),
             "--no-check-certificate",
-            "--merge-output-format", "mp4",
             "-N", "5",
             "-o", outputTemplate,
             job.sourceUrl.absoluteString
         ]
+        if !isHLSPlaylist(job.sourceUrl) {
+            arguments.insert(contentsOf: ["--merge-output-format", "mp4"], at: cookieArguments.count + 4)
+        }
         if !youtubeForbiddenFallback {
-            arguments.insert(contentsOf: ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 8 -s 8 -k 1M"], at: 4)
+            let downloaderArgumentIndex = cookieArguments.count + 2
+            arguments.insert(contentsOf: ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 8 -s 8 -k 1M"], at: downloaderArgumentIndex)
         }
         if youtubeForbiddenFallback {
             arguments.insert(contentsOf: ["--extractor-args", "youtube:player_client=default,-tv,web_safari,web_embedded"], at: 0)
@@ -347,7 +350,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         }
         if isHLSPlaylist(job.sourceUrl) {
             arguments.insert("--force-generic-extractor", at: 0)
-            arguments.insert(contentsOf: ["--remux-video", "mp4"], at: 0)
+            arguments.insert("--hls-use-mpegts", at: 0)
         }
         if let referer = ytDlpReferer(for: job)?.absoluteString.nilIfEmpty {
             arguments.insert(contentsOf: ["--referer", referer], at: 0)
@@ -355,17 +358,77 @@ final class DownloadEngine: NSObject, ObservableObject {
         return arguments
     }
 
-    private func updateCompletedYtDlpJob(_ job: DownloadJob) {
+    private func updateCompletedYtDlpJob(_ job: DownloadJob) async throws {
         let outputTemplate = URL(fileURLWithPath: ytDlpOutputTemplate(for: job))
         let folder = outputTemplate.deletingLastPathComponent()
-        let prefix = outputTemplate.lastPathComponent.replacingOccurrences(of: ".%(ext)s", with: "")
+        let prefix = outputTemplate.deletingPathExtension().lastPathComponent.replacingOccurrences(of: ".%(ext)s", with: "")
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
         guard let file = files.filter({ $0.lastPathComponent.hasPrefix(prefix) }).max(by: { lhs, rhs in
             ((try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
         }) else { return }
-        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        AppLogger.log("yt-dlp output file=\(file.path) size=\(size)", jobID: job.id)
-        store.update(job.id) { $0.fileName = file.lastPathComponent; $0.destinationPath = file.path; $0.totalBytes = size; $0.downloadedBytes = size }
+        let finalFile = try await convertHLSMpegTSToMP4IfNeeded(file, job: job)
+        let size = (try? finalFile.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        AppLogger.log("yt-dlp output file=\(finalFile.path) size=\(size)", jobID: job.id)
+        store.update(job.id) { $0.fileName = finalFile.lastPathComponent; $0.destinationPath = finalFile.path; $0.totalBytes = size; $0.downloadedBytes = size }
+    }
+
+    private func convertHLSMpegTSToMP4IfNeeded(_ file: URL, job: DownloadJob) async throws -> URL {
+        guard isHLSPlaylist(job.sourceUrl), file.pathExtension.lowercased() == "ts" || isMpegTSFile(file) else { return file }
+        guard let executable = findExecutable("ffmpeg") else {
+            AppLogger.log("ffmpeg executable not found for HLS TS to MP4 conversion", jobID: job.id)
+            throw NSError(domain: "Download", code: 3, userInfo: [NSLocalizedDescriptionKey: "ffmpeg belum terinstall. Install dengan: brew install ffmpeg"])
+        }
+
+        let replacingBrokenMP4 = file.pathExtension.lowercased() == "mp4"
+        let output = replacingBrokenMP4 ? uniqueFileURL(file.deletingPathExtension().appendingPathExtension("remux.mp4")) : uniqueFileURL(file.deletingPathExtension().appendingPathExtension("mp4"))
+        let arguments = ["-f", "mpegts", "-i", file.path, "-c", "copy", "-bsf:a", "aac_adtstoasc", output.path]
+        let result = try await runExternalTool(executable: executable, arguments: arguments, jobID: job.id, toolName: "ffmpeg")
+        guard result.status == 0 else {
+            let message = result.output.split(separator: "\n").filter { !String($0).trimmingCharacters(in: CharacterSet.whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "ffmpeg gagal mengkonversi TS ke MP4 dengan kode \(result.status)."
+            throw NSError(domain: "Download", code: Int(result.status), userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        if replacingBrokenMP4 {
+            _ = try FileManager.default.replaceItemAt(file, withItemAt: output)
+            return file
+        }
+        try? FileManager.default.removeItem(at: file)
+        return output
+    }
+
+    private nonisolated func hlsTransportStreamURL(for destination: URL) -> URL {
+        let fileName = destination.lastPathComponent.replacingOccurrences(of: ".%(ext)s", with: "")
+        let baseName = (fileName as NSString).deletingPathExtension.nilIfEmpty ?? fileName
+        return destination.deletingLastPathComponent().appendingPathComponent(baseName).appendingPathExtension("ts")
+    }
+
+    private nonisolated func isMpegTSFile(_ file: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: 377)
+        guard data.count >= 377 else { return false }
+        return data[0] == 0x47 && data[188] == 0x47 && data[376] == 0x47
+    }
+
+    private func runExternalTool(executable: URL, arguments: [String], jobID: UUID, toolName: String) async throws -> (output: String, status: Int32) {
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.environment = processEnvironmentWithToolPaths()
+        AppLogger.log("Run \(toolName) executable=\(executable.path) args=\(redactedArguments(arguments))", jobID: jobID)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        activeProcesses[jobID] = process
+
+        try process.run()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        await waitForProcess(process)
+        activeProcesses[jobID] = nil
+
+        let outputText = String(data: output, encoding: .utf8) ?? ""
+        AppLogger.writeJobOutput(outputText, jobID: jobID)
+        AppLogger.log("\(toolName) exited status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)", jobID: jobID)
+        return (outputText, process.terminationStatus)
     }
 
     private func notify(title: String, body: String) {
@@ -423,6 +486,72 @@ private func ytDlpCookieBrowser(for job: DownloadJob) -> String {
     case "firefox": return "firefox"
     default: return "chrome"
     }
+}
+
+private func ytDlpCookieArguments(for job: DownloadJob, browser: String, cookiesProfilePath: String) -> [String] {
+    if browser == "firefox" {
+        guard let profile = firefoxCookieProfilePath(from: cookiesProfilePath) else {
+            AppLogger.log("Firefox cookies unavailable; no cookies.sqlite found at configured cookies/profile path. Continuing without browser cookies.", jobID: job.id)
+            return []
+        }
+        return ["--cookies-from-browser", "firefox:\(profile)"]
+    }
+    if let profile = chromiumCookieProfilePath(from: cookiesProfilePath) {
+        return ["--cookies-from-browser", "\(browser):\(profile)"]
+    }
+    return ["--cookies-from-browser", browser]
+}
+
+private func firefoxCookieProfilePath(from configuredPath: String) -> String? {
+    let expandedPath = (configuredPath as NSString).expandingTildeInPath
+    let fileManager = FileManager.default
+    var isDirectory: ObjCBool = false
+    guard fileManager.fileExists(atPath: expandedPath, isDirectory: &isDirectory) else { return nil }
+
+    let url = URL(fileURLWithPath: expandedPath)
+    if !isDirectory.boolValue {
+        return url.lastPathComponent == "cookies.sqlite" ? url.deletingLastPathComponent().path : nil
+    }
+
+    if fileManager.fileExists(atPath: url.appendingPathComponent("cookies.sqlite").path) {
+        return url.path
+    }
+
+    guard let profiles = try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return nil }
+    return profiles
+        .filter { fileManager.fileExists(atPath: $0.appendingPathComponent("cookies.sqlite").path) }
+        .max { lhs, rhs in
+            profileModificationDate(lhs) < profileModificationDate(rhs)
+        }?
+        .path
+}
+
+private func chromiumCookieProfilePath(from configuredPath: String) -> String? {
+    let expandedPath = (configuredPath as NSString).expandingTildeInPath
+    let fileManager = FileManager.default
+    var isDirectory: ObjCBool = false
+    guard fileManager.fileExists(atPath: expandedPath, isDirectory: &isDirectory) else { return nil }
+
+    let url = URL(fileURLWithPath: expandedPath)
+    if !isDirectory.boolValue {
+        return url.lastPathComponent == "Cookies" ? url.deletingLastPathComponent().path : nil
+    }
+
+    if fileManager.fileExists(atPath: url.appendingPathComponent("Cookies").path) {
+        return url.path
+    }
+
+    guard let profiles = try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return nil }
+    return profiles
+        .filter { fileManager.fileExists(atPath: $0.appendingPathComponent("Cookies").path) }
+        .max { lhs, rhs in
+            profileModificationDate(lhs) < profileModificationDate(rhs)
+        }?
+        .path
+}
+
+private func profileModificationDate(_ url: URL) -> Date {
+    ((try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
 }
 
 private func defaultBrowserUserAgent(for browser: String) -> String {
@@ -573,6 +702,20 @@ private func mergePartials(partials: [URL], destination: URL, expectedBytes: Int
     }
     try? FileManager.default.removeItem(at: destination)
     try FileManager.default.moveItem(at: tmp, to: destination)
+}
+
+private func uniqueFileURL(_ url: URL) -> URL {
+    let fileManager = FileManager.default
+    guard fileManager.fileExists(atPath: url.path) else { return url }
+    let directory = url.deletingLastPathComponent()
+    let baseName = url.deletingPathExtension().lastPathComponent
+    let pathExtension = url.pathExtension
+    var index = 1
+    while true {
+        let candidate = directory.appendingPathComponent("\(baseName)-\(index)").appendingPathExtension(pathExtension)
+        if !fileManager.fileExists(atPath: candidate.path) { return candidate }
+        index += 1
+    }
 }
 
 private func cleanupPartials(for id: UUID) {
