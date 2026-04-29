@@ -1,13 +1,13 @@
 # MacVidCatch
 
-MacVidCatch is a native macOS 13+ Internet Download Manager prototype with browser integration. The user-facing app, `.app` bundle, DMG volume, and documentation use the name `MacVidCatch`; the Swift package and internal executable target remain `VidcatchMac`.
+MacVidCatch is a native macOS 13+ Internet Download Manager prototype with browser integration. The user-facing app, `.app` bundle, DMG volume, Swift package, and executable target use the name `MacVidCatch`.
 
 ## Current Features
 
 - SwiftUI desktop app with a downloads list, status filters, manual URL dialog, settings view, and menu bar controls.
 - Native HTTP/HTTPS downloader with metadata probing, queue management, pause/resume, retry, file-size validation, partial-file cleanup, and segmented downloads when the server supports `Accept-Ranges: bytes`.
 - Basic global speed limiting and local persistence under Application Support.
-- Custom URL scheme integration via `vidcatchmac://download?...`.
+- Custom URL scheme integration via `macvidcatch://download?...`.
 - Browser-originated video and HLS downloads routed through `yt-dlp`.
 - Chrome Manifest V3 extension prototype with direct media detection, legal-first DRM checks, and a floating download button.
 - Local scripts for building the `.app` bundle and DMG installer.
@@ -20,10 +20,10 @@ MacVidCatch is a native macOS 13+ Internet Download Manager prototype with brows
 - Optional runtime tools for browser video and HLS downloads:
 
 ```bash
-brew install yt-dlp aria2
+brew install yt-dlp aria2 ffmpeg
 ```
 
-MacVidCatch looks for `yt-dlp` in common Homebrew and system locations such as `/opt/homebrew/bin` and `/usr/local/bin`.
+MacVidCatch looks for `yt-dlp` in common Homebrew and system locations such as `/opt/homebrew/bin` and `/usr/local/bin`. HLS-to-MP4 output requires `ffmpeg`, which `yt-dlp` uses for the final remux step.
 
 ## Build And Run
 
@@ -35,7 +35,7 @@ swift build -c release
 open ".build/release/MacVidCatch.app"
 ```
 
-`./scripts/build_app.sh` builds the Swift package, creates `.build/release/MacVidCatch.app`, copies the `VidcatchMac` executable as `MacVidCatch`, and writes the bundle `Info.plist` including the `vidcatchmac` URL scheme.
+`./scripts/build_app.sh` builds the Swift package, creates `.build/release/MacVidCatch.app`, copies the `MacVidCatch` executable into the bundle, and writes the bundle `Info.plist` including the `macvidcatch` URL scheme.
 
 ## Create A DMG
 
@@ -59,7 +59,7 @@ xcrun stapler staple ".build/release/MacVidCatch.dmg"
 The app registers the custom URL scheme:
 
 ```text
-vidcatchmac://download?url=...
+macvidcatch://download?url=...
 ```
 
 The Chrome extension sends the media URL plus page URL, title, and MIME type to the app. Browser-originated downloads and `.m3u8` / HLS media use the `yt-dlp` path, while native direct HTTP downloads continue to use the built-in downloader.
@@ -74,7 +74,7 @@ To load the Chrome extension prototype:
 
 ## Browser Video Downloads
 
-For video and HLS media sent by the Chrome extension, MacVidCatch runs `yt-dlp` with the originating page referer, browser user agent, Chrome cookies, and `aria2c` as the parallel downloader.
+For video and HLS media sent by the Chrome extension, MacVidCatch runs `yt-dlp` with the originating page referer, browser user agent, Chrome cookies, and `aria2c` as the parallel downloader. HLS playlists are remuxed to MP4 through `ffmpeg` after download.
 
 Make sure you are already signed in with the same Chrome profile when downloading media that requires authorized access. MacVidCatch does not bypass DRM, paywalls, encryption, or access controls.
 

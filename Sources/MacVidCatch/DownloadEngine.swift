@@ -125,7 +125,7 @@ final class DownloadEngine: NSObject, ObservableObject {
                 try await download(job: latest)
                 guard !Task.isCancelled else { return }
                 AppLogger.log("Completed job id=\(jobID.uuidString)", jobID: jobID)
-                store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0 }
+                store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0; $0.externalProgress = 1 }
                 notify(title: "Download selesai", body: latest.fileName)
                 return
             } catch {
@@ -278,19 +278,40 @@ final class DownloadEngine: NSObject, ObservableObject {
         process.standardOutput = pipe
         process.standardError = pipe
         activeProcesses[jobID] = process
+        let outputCollector = YtDlpOutputCollector()
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            for progress in outputCollector.append(data) {
+                Task { @MainActor in self?.applyYtDlpProgress(progress, jobID: jobID) }
+            }
+        }
 
         try process.run()
-        let reader = Task.detached { [weak pipe] in
-            guard let handle = pipe?.fileHandleForReading else { return Data() }
-            return handle.readDataToEndOfFile()
-        }
         await waitForProcess(process)
+        pipe.fileHandleForReading.readabilityHandler = nil
         activeProcesses[jobID] = nil
-        let output = await reader.value
+        if let progress = outputCollector.flushProgress() {
+            applyYtDlpProgress(progress, jobID: jobID)
+        }
+        let output = outputCollector.data
         let outputText = String(data: output, encoding: .utf8) ?? ""
         AppLogger.writeJobOutput(outputText, jobID: jobID)
         AppLogger.log("yt-dlp exited status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)", jobID: jobID)
         return (outputText, process.terminationStatus)
+    }
+
+    private func applyYtDlpProgress(_ progress: YtDlpProgress, jobID: UUID) {
+        store.update(jobID) { job in
+            job.externalProgress = progress.fraction
+            if let totalBytes = progress.totalBytes, totalBytes > 0 {
+                job.totalBytes = max(job.totalBytes, totalBytes)
+                job.downloadedBytes = Int64(Double(job.totalBytes) * progress.fraction)
+            }
+            if let speedBytesPerSecond = progress.speedBytesPerSecond {
+                job.speedBytesPerSecond = speedBytesPerSecond
+            }
+        }
     }
 
     private func ytDlpOutputTemplate(for job: DownloadJob) -> String {
@@ -324,6 +345,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         }
         if isHLSPlaylist(job.sourceUrl) {
             arguments.insert("--force-generic-extractor", at: 0)
+            arguments.insert(contentsOf: ["--remux-video", "mp4"], at: 0)
         }
         if let referer = ytDlpReferer(for: job)?.absoluteString.nilIfEmpty {
             arguments.insert(contentsOf: ["--referer", referer], at: 0)
@@ -354,6 +376,38 @@ final class DownloadEngine: NSObject, ObservableObject {
 private let defaultBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 private let toolSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/opt/node/bin", "/usr/local/opt/node/bin"]
 
+private struct YtDlpProgress {
+    var fraction: Double
+    var totalBytes: Int64?
+    var speedBytesPerSecond: Int64?
+}
+
+private final class YtDlpOutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outputData = Data()
+    private var bufferedText = ""
+
+    var data: Data {
+        lock.lock(); defer { lock.unlock() }
+        return outputData
+    }
+
+    func append(_ data: Data) -> [YtDlpProgress] {
+        lock.lock(); defer { lock.unlock() }
+        outputData.append(data)
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        bufferedText += text
+        let parts = bufferedText.components(separatedBy: CharacterSet(charactersIn: "\r\n"))
+        bufferedText = parts.last ?? ""
+        return parts.dropLast().compactMap(parseYtDlpProgress)
+    }
+
+    func flushProgress() -> YtDlpProgress? {
+        lock.lock(); defer { lock.unlock() }
+        return parseYtDlpProgress(bufferedText)
+    }
+}
+
 private func preferredDownloadMethod(for url: URL, mimeType: String?, sourceType: DownloadJob.SourceType) -> DownloadJob.DownloadMethod {
     let mime = mimeType?.lowercased() ?? ""
     if isHLSPlaylist(url) || mime.contains("mpegurl") || mime.contains("x-mpegurl") { return .ytDlp }
@@ -368,6 +422,39 @@ private func isHLSPlaylist(_ url: URL) -> Bool {
 private func isYouTubeURL(_ url: URL) -> Bool {
     guard let host = url.host?.lowercased() else { return false }
     return host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com")
+}
+
+private func parseYtDlpProgress(_ line: String) -> YtDlpProgress? {
+    guard line.contains("[download]") else { return nil }
+    guard let percentMatch = firstRegexMatch(in: line, pattern: #"(\d+(?:\.\d+)?)%"#), let percent = Double(percentMatch) else { return nil }
+    let totalBytes = firstRegexMatch(in: line, pattern: #"of\s+~?\s*([0-9.]+\s*[KMGT]?i?B)"#).flatMap(parseByteCount)
+    let speedBytesPerSecond = firstRegexMatch(in: line, pattern: #"at\s+([0-9.]+\s*[KMGT]?i?B)/s"#).flatMap(parseByteCount)
+    return YtDlpProgress(fraction: min(max(percent / 100, 0), 1), totalBytes: totalBytes, speedBytesPerSecond: speedBytesPerSecond)
+}
+
+private func firstRegexMatch(in text: String, pattern: String) -> String? {
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > 1, let matchRange = Range(match.range(at: 1), in: text) else { return nil }
+    return String(text[matchRange]).replacingOccurrences(of: " ", with: "")
+}
+
+private func parseByteCount(_ value: String) -> Int64? {
+    guard let match = firstRegexMatch(in: value, pattern: #"^([0-9.]+)([KMGT]?i?B)$"#), let number = Double(match) else { return nil }
+    let unit = value.replacingOccurrences(of: " ", with: "").drop { $0.isNumber || $0 == "." }.lowercased()
+    let multiplier: Double
+    switch unit {
+    case "kb": multiplier = 1_000
+    case "mb": multiplier = 1_000_000
+    case "gb": multiplier = 1_000_000_000
+    case "tb": multiplier = 1_000_000_000_000
+    case "kib": multiplier = 1_024
+    case "mib": multiplier = 1_048_576
+    case "gib": multiplier = 1_073_741_824
+    case "tib": multiplier = 1_099_511_627_776
+    default: multiplier = 1
+    }
+    return Int64(number * multiplier)
 }
 
 private func ytDlpReferer(for job: DownloadJob) -> URL? {

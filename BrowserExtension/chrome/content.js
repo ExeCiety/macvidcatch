@@ -11,6 +11,8 @@ detectYouTubePageCandidate();
 setInterval(detectYouTubePageCandidate, 1000);
 
 function setCandidate(message) {
+  if (candidate && mediaPriority(message.media) < mediaPriority(candidate.media)) return;
+
   candidate = message;
   if (candidate.media.isDrmProtected || !candidate.policy.isAllowedByDomainPolicy) {
     hideButton();
@@ -18,6 +20,15 @@ function setCandidate(message) {
     return;
   }
   showButton();
+}
+
+function mediaPriority(media) {
+  const url = (media.url || '').toLowerCase();
+  const mimeType = (media.mimeType || '').toLowerCase();
+  if (mimeType.includes('mpegurl') || url.includes('.m3u8')) return 100;
+  if (mimeType === 'application/x-macvidcatch-youtube') return 90;
+  if (mimeType.startsWith('video/') || /\.(mp4|mov|webm|m4v)([?#]|$)/i.test(url)) return 50;
+  return 10;
 }
 
 function detectYouTubePageCandidate() {
@@ -33,7 +44,7 @@ function detectYouTubePageCandidate() {
       type: 'MDMPRO_MEDIA_CANDIDATE',
       media: {
         url: pageUrl,
-        mimeType: 'application/x-vidcatchmac-youtube',
+        mimeType: 'application/x-macvidcatch-youtube',
         title: document.title.replace(/\s+-\s+YouTube$/, ''),
         quality: '',
         isDrmProtected: false
@@ -65,7 +76,7 @@ function youtubeDownloadUrl() {
 function showButton() {
   if (!button) {
     button = document.createElement('button');
-    button.id = 'vidcatchmac-floating-button';
+    button.id = 'macvidcatch-floating-button';
     button.textContent = 'Download';
     button.addEventListener('click', sendToApp);
     document.documentElement.appendChild(button);
@@ -85,13 +96,13 @@ function sendToApp() {
     title: candidate.media.title || document.title || '',
     mimeType: candidate.media.mimeType || ''
   });
-  const target = `vidcatchmac://download?${params.toString()}`;
+  const target = `macvidcatch://download?${params.toString()}`;
   window.location.href = target;
 }
 
 function showNotice(text) {
   const notice = document.createElement('div');
-  notice.id = 'vidcatchmac-notice';
+  notice.id = 'macvidcatch-notice';
   notice.textContent = text;
   document.documentElement.appendChild(notice);
   setTimeout(() => notice.remove(), 5000);

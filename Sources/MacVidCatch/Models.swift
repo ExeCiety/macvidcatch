@@ -22,8 +22,9 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     var domain: String
     var errorCode: String?
     var speedBytesPerSecond: Int64 = 0
+    var externalProgress: Double?
 
-    var progress: Double { totalBytes > 0 ? Double(downloadedBytes) / Double(totalBytes) : 0 }
+    var progress: Double { totalBytes > 0 ? Double(downloadedBytes) / Double(totalBytes) : externalProgress ?? 0 }
 
     init(
         id: UUID = UUID(),
@@ -42,7 +43,8 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         downloadMethod: DownloadMethod = .native,
         domain: String,
         errorCode: String? = nil,
-        speedBytesPerSecond: Int64 = 0
+        speedBytesPerSecond: Int64 = 0,
+        externalProgress: Double? = nil
     ) {
         self.id = id
         self.sourceUrl = sourceUrl
@@ -61,6 +63,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         self.domain = domain
         self.errorCode = errorCode
         self.speedBytesPerSecond = speedBytesPerSecond
+        self.externalProgress = externalProgress
     }
 
     init(from decoder: Decoder) throws {
@@ -82,6 +85,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         domain = try container.decodeIfPresent(String.self, forKey: .domain) ?? sourceUrl.host ?? ""
         errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
         speedBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedBytesPerSecond) ?? 0
+        externalProgress = try container.decodeIfPresent(Double.self, forKey: .externalProgress)
     }
 }
 

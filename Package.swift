@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "VidcatchMac",
+    name: "MacVidCatch",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "VidcatchMac", targets: ["VidcatchMac"])
+        .executable(name: "MacVidCatch", targets: ["MacVidCatch"])
     ],
     targets: [
-        .executableTarget(name: "VidcatchMac")
+        .executableTarget(name: "MacVidCatch")
     ]
 )
