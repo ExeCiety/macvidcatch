@@ -24,6 +24,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     var speedBytesPerSecond: Int64 = 0
     var externalProgress: Double?
     var sourceBrowser: String?
+    var preferredQuality: String?
 
     var progress: Double { totalBytes > 0 ? Double(downloadedBytes) / Double(totalBytes) : externalProgress ?? 0 }
 
@@ -46,7 +47,8 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         errorCode: String? = nil,
         speedBytesPerSecond: Int64 = 0,
         externalProgress: Double? = nil,
-        sourceBrowser: String? = nil
+        sourceBrowser: String? = nil,
+        preferredQuality: String? = nil
     ) {
         self.id = id
         self.sourceUrl = sourceUrl
@@ -67,6 +69,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         self.speedBytesPerSecond = speedBytesPerSecond
         self.externalProgress = externalProgress
         self.sourceBrowser = sourceBrowser
+        self.preferredQuality = preferredQuality
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +93,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         speedBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedBytesPerSecond) ?? 0
         externalProgress = try container.decodeIfPresent(Double.self, forKey: .externalProgress)
         sourceBrowser = try container.decodeIfPresent(String.self, forKey: .sourceBrowser)
+        preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality)
     }
 }
 

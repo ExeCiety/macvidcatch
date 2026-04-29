@@ -10,24 +10,26 @@ final class DownloadEngine: NSObject, ObservableObject {
 
     init(store: AppStore) { self.store = store }
 
-    func enqueue(url: URL, pageURL: URL? = nil, suggestedTitle: String? = nil, mimeType: String? = nil, destinationFolder: String? = nil, sourceType: DownloadJob.SourceType = .manual, sourceBrowser: String? = nil) async {
+    func enqueue(url: URL, pageURL: URL? = nil, suggestedTitle: String? = nil, mimeType: String? = nil, destinationFolder: String? = nil, destinationFileName: String? = nil, sourceType: DownloadJob.SourceType = .manual, sourceBrowser: String? = nil, preferredQuality: String? = nil) async {
         do {
             let method = preferredDownloadMethod(for: url, mimeType: mimeType, sourceType: sourceType)
-            AppLogger.log("Enqueue url=\(redactedURLString(url)) pageUrl=\(pageURL.map(redactedURLString) ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) browser=\(sourceBrowser ?? "-") method=\(method.rawValue)")
+            AppLogger.log("Enqueue url=\(redactedURLString(url)) pageUrl=\(pageURL.map(redactedURLString) ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) browser=\(sourceBrowser ?? "-") method=\(method.rawValue) quality=\(preferredQuality ?? "-")")
             let metadata = method == .ytDlp ? ytDlpMetadata(for: url, title: suggestedTitle) : try await probe(url)
             let folder = destinationFolder ?? store.settings.defaultDownloadFolder
+            let fileName = sanitizedFileName(destinationFileName?.nilIfEmpty ?? metadata.fileName)
             var job = DownloadJob(
                 sourceUrl: url,
                 pageUrl: pageURL,
                 finalUrl: metadata.finalURL,
-                fileName: metadata.fileName,
-                destinationPath: URL(fileURLWithPath: folder).appendingPathComponent(metadata.fileName).path,
+                fileName: fileName,
+                destinationPath: URL(fileURLWithPath: folder).appendingPathComponent(fileName).path,
                 totalBytes: metadata.size,
                 supportsResume: metadata.supportsResume,
                 sourceType: sourceType,
                 downloadMethod: method,
                 domain: url.host ?? "",
-                sourceBrowser: sourceBrowser
+                sourceBrowser: sourceBrowser,
+                preferredQuality: preferredQuality
             )
             AppLogger.log("Created job id=\(job.id.uuidString) fileName=\(job.fileName) destination=\(job.destinationPath)", jobID: job.id)
             if store.settings.domainBlocklist.contains(where: { job.domain.localizedCaseInsensitiveContains($0) }) {
@@ -336,6 +338,9 @@ final class DownloadEngine: NSObject, ObservableObject {
         if !isHLSPlaylist(job.sourceUrl) {
             arguments.insert(contentsOf: ["--merge-output-format", "mp4"], at: cookieArguments.count + 4)
         }
+        if let format = ytDlpFormatSelector(for: job.preferredQuality) {
+            arguments.insert(contentsOf: ["--format", format], at: 0)
+        }
         if !youtubeForbiddenFallback {
             let downloaderArgumentIndex = cookieArguments.count + 2
             arguments.insert(contentsOf: ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 8 -s 8 -k 1M"], at: downloaderArgumentIndex)
@@ -356,6 +361,13 @@ final class DownloadEngine: NSObject, ObservableObject {
             arguments.insert(contentsOf: ["--referer", referer], at: 0)
         }
         return arguments
+    }
+
+    private func ytDlpFormatSelector(for quality: String?) -> String? {
+        guard let quality = quality?.nilIfEmpty, quality != "best" else { return nil }
+        let digits = quality.filter(\.isNumber)
+        guard !digits.isEmpty else { return nil }
+        return "bv*[height<=\(digits)]+ba/best[height<=\(digits)]/best"
     }
 
     private func updateCompletedYtDlpJob(_ job: DownloadJob) async throws {
@@ -648,7 +660,7 @@ private func waitForProcess(_ process: Process) async {
     }
 }
 
-private func sanitizedFileName(_ value: String) -> String {
+func sanitizedFileName(_ value: String) -> String {
     let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>")
     let decoded = value.removingPercentEncoding ?? value
     let cleaned = decoded.components(separatedBy: invalid).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -727,4 +739,4 @@ private func filename(from disposition: String) -> String? {
     disposition.components(separatedBy: ";").map { $0.trimmingCharacters(in: .whitespaces) }.first { $0.lowercased().hasPrefix("filename=") }?.dropFirst(9).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
 }
 
-private extension String { var nilIfEmpty: String? { isEmpty ? nil : self } }
+extension String { var nilIfEmpty: String? { isEmpty ? nil : self } }

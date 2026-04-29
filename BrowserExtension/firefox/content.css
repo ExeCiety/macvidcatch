@@ -24,3 +24,61 @@
   background: rgba(40,40,40,.94);
   font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
 }
+
+#macvidcatch-quality-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 24px;
+  background: rgba(0,0,0,.18);
+  font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.macvidcatch-quality-card {
+  width: 280px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 16px;
+  color: white;
+  background: rgba(30,30,30,.96);
+  box-shadow: 0 14px 36px rgba(0,0,0,.34);
+}
+
+.macvidcatch-quality-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.macvidcatch-quality-subtitle {
+  color: rgba(255,255,255,.72);
+  margin-bottom: 12px;
+}
+
+.macvidcatch-quality-options {
+  display: grid;
+  gap: 8px;
+}
+
+.macvidcatch-quality-options button,
+.macvidcatch-quality-actions button {
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  color: white;
+  background: #0a84ff;
+  font: 600 13px -apple-system, BlinkMacSystemFont, sans-serif;
+  cursor: pointer;
+}
+
+.macvidcatch-quality-actions {
+  margin-top: 10px;
+}
+
+.macvidcatch-quality-actions button {
+  background: rgba(255,255,255,.14);
+}

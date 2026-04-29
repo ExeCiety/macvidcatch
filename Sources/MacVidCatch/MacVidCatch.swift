@@ -34,7 +34,26 @@ final class DeepLinkRouter: ObservableObject {
         let title = components.queryItems?.first(where: { $0.name == "title" })?.value
         let mimeType = components.queryItems?.first(where: { $0.name == "mimeType" })?.value
         let browser = components.queryItems?.first(where: { $0.name == "browser" })?.value
-        await engine?.enqueue(url: downloadURL, pageURL: pageURL, suggestedTitle: title, mimeType: mimeType, sourceType: .browserExtension, sourceBrowser: browser)
+        let quality = components.queryItems?.first(where: { $0.name == "quality" })?.value
+        let defaultName = browserDownloadFileName(url: downloadURL, title: title, quality: quality)
+        guard let destination = chooseBrowserDownloadDestination(defaultName: defaultName) else { return }
+        await engine?.enqueue(url: downloadURL, pageURL: pageURL, suggestedTitle: title, mimeType: mimeType, destinationFolder: destination.deletingLastPathComponent().path, destinationFileName: destination.lastPathComponent, sourceType: .browserExtension, sourceBrowser: browser, preferredQuality: quality)
+    }
+
+    private func chooseBrowserDownloadDestination(defaultName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Save Video"
+        panel.message = "Pilih nama file dan lokasi penyimpanan."
+        panel.nameFieldStringValue = defaultName
+        panel.canCreateDirectories = true
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func browserDownloadFileName(url: URL, title: String?, quality: String?) -> String {
+        let rawName = title?.nilIfEmpty ?? url.deletingPathExtension().lastPathComponent.nilIfEmpty ?? "video"
+        let baseName = sanitizedFileName((rawName as NSString).deletingPathExtension.nilIfEmpty ?? rawName)
+        let suffix = quality.flatMap { $0 == "best" ? nil : $0.nilIfEmpty }.map { "-\($0)p" } ?? ""
+        return baseName + suffix + ".mp4"
     }
 }
 
