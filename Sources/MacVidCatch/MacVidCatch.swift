@@ -8,7 +8,7 @@ struct MacVidCatchApp: App {
     @State private var engine: DownloadEngine?
 
     var body: some Scene {
-        WindowGroup {
+        Window("MacVidCatch", id: "main") {
             ContentView(store: store, engine: engine)
                 .frame(minWidth: 980, minHeight: 620)
                 .onAppear {
