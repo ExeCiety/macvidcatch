@@ -13,7 +13,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     func enqueue(url: URL, pageURL: URL? = nil, suggestedTitle: String? = nil, mimeType: String? = nil, destinationFolder: String? = nil, sourceType: DownloadJob.SourceType = .manual) async {
         do {
             let method = preferredDownloadMethod(for: url, mimeType: mimeType, sourceType: sourceType)
-            AppLogger.log("Enqueue url=\(url.absoluteString) pageUrl=\(pageURL?.absoluteString ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) method=\(method.rawValue)")
+            AppLogger.log("Enqueue url=\(redactedURLString(url)) pageUrl=\(pageURL.map(redactedURLString) ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) method=\(method.rawValue)")
             let metadata = method == .ytDlp ? ytDlpMetadata(for: url, title: suggestedTitle) : try await probe(url)
             let folder = destinationFolder ?? store.settings.defaultDownloadFolder
             var job = DownloadJob(
@@ -38,7 +38,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         } catch {
             let fileName = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
             let job = DownloadJob(sourceUrl: url, pageUrl: pageURL, fileName: fileName, destinationPath: URL(fileURLWithPath: store.settings.defaultDownloadFolder).appendingPathComponent(fileName).path, status: .failed, sourceType: sourceType, domain: url.host ?? "", errorCode: error.localizedDescription)
-            AppLogger.log("Failed to enqueue url=\(url.absoluteString) error=\(error.localizedDescription)", jobID: job.id)
+            AppLogger.log("Failed to enqueue url=\(redactedURLString(url)) error=\(error.localizedDescription)", jobID: job.id)
             store.upsert(job)
         }
     }
@@ -53,7 +53,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     func start(_ id: UUID) {
         guard activeTasks[id] == nil, let job = store.jobs.first(where: { $0.id == id }) else { return }
         pausedIDs.remove(id)
-        AppLogger.log("Start job id=\(id.uuidString) method=\(job.downloadMethod.rawValue) url=\(job.sourceUrl.absoluteString)", jobID: id)
+        AppLogger.log("Start job id=\(id.uuidString) method=\(job.downloadMethod.rawValue) url=\(redactedURLString(job.sourceUrl))", jobID: id)
         store.update(id) { $0.status = .downloading; $0.errorCode = nil }
         activeTasks[id] = Task { [weak self] in
             await self?.run(jobID: id, originalJob: job)
@@ -232,8 +232,9 @@ final class DownloadEngine: NSObject, ObservableObject {
     }
 
     private func ytDlpMetadata(for url: URL, title: String?) -> (fileName: String, size: Int64, supportsResume: Bool, finalURL: URL?) {
-        let baseName = sanitizedFileName(title?.nilIfEmpty ?? url.deletingPathExtension().lastPathComponent.nilIfEmpty ?? "video")
-        let fileName = (baseName as NSString).pathExtension.isEmpty ? baseName + ".%(ext)s" : baseName
+        let rawName = title?.nilIfEmpty ?? url.deletingPathExtension().lastPathComponent.nilIfEmpty ?? "video"
+        let baseName = sanitizedFileName((rawName as NSString).deletingPathExtension.nilIfEmpty ?? rawName)
+        let fileName = baseName + ".%(ext)s"
         return (fileName, 0, false, url)
     }
 
@@ -243,7 +244,7 @@ final class DownloadEngine: NSObject, ObservableObject {
             throw NSError(domain: "Download", code: 2, userInfo: [NSLocalizedDescriptionKey: "yt-dlp belum terinstall. Install dengan: brew install yt-dlp aria2"])
         }
 
-        let outputTemplate = URL(fileURLWithPath: job.destinationPath).path
+        let outputTemplate = ytDlpOutputTemplate(for: job)
         let process = Process()
         process.executableURL = executable
         process.arguments = ytDlpArguments(for: job, outputTemplate: outputTemplate)
@@ -273,26 +274,39 @@ final class DownloadEngine: NSObject, ObservableObject {
         updateCompletedYtDlpJob(job)
     }
 
+    private func ytDlpOutputTemplate(for job: DownloadJob) -> String {
+        let destination = URL(fileURLWithPath: job.destinationPath)
+        guard isHLSPlaylist(job.sourceUrl) || destination.pathExtension.lowercased() == "m3u8" else {
+            return destination.path
+        }
+        return destination.deletingPathExtension().appendingPathExtension("%(ext)s").path
+    }
+
     private func ytDlpArguments(for job: DownloadJob, outputTemplate: String) -> [String] {
         var arguments = [
-            job.sourceUrl.absoluteString,
             "--cookies-from-browser", "chrome",
             "--user-agent", defaultBrowserUserAgent,
             "--downloader", "aria2c",
             "--downloader-args", "aria2c:-x 8 -s 8 -k 1M",
             "--no-check-certificate",
+            "--merge-output-format", "mp4",
             "-N", "5",
-            "-o", outputTemplate
+            "-o", outputTemplate,
+            job.sourceUrl.absoluteString
         ]
+        if isHLSPlaylist(job.sourceUrl) {
+            arguments.insert("--force-generic-extractor", at: 0)
+        }
         if let referer = job.pageUrl?.absoluteString.nilIfEmpty {
-            arguments.insert(contentsOf: ["--referer", referer], at: 1)
+            arguments.insert(contentsOf: ["--referer", referer], at: 0)
         }
         return arguments
     }
 
     private func updateCompletedYtDlpJob(_ job: DownloadJob) {
-        let folder = URL(fileURLWithPath: job.destinationPath).deletingLastPathComponent()
-        let prefix = URL(fileURLWithPath: job.destinationPath).lastPathComponent.replacingOccurrences(of: ".%(ext)s", with: "")
+        let outputTemplate = URL(fileURLWithPath: ytDlpOutputTemplate(for: job))
+        let folder = outputTemplate.deletingLastPathComponent()
+        let prefix = outputTemplate.lastPathComponent.replacingOccurrences(of: ".%(ext)s", with: "")
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
         guard let file = files.filter({ $0.lastPathComponent.hasPrefix(prefix) }).max(by: { lhs, rhs in
             ((try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
@@ -312,11 +326,14 @@ final class DownloadEngine: NSObject, ObservableObject {
 private let defaultBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
 private func preferredDownloadMethod(for url: URL, mimeType: String?, sourceType: DownloadJob.SourceType) -> DownloadJob.DownloadMethod {
-    let path = url.path.lowercased()
     let mime = mimeType?.lowercased() ?? ""
-    if path.contains(".m3u8") || mime.contains("mpegurl") || mime.contains("x-mpegurl") { return .ytDlp }
+    if isHLSPlaylist(url) || mime.contains("mpegurl") || mime.contains("x-mpegurl") { return .ytDlp }
     if sourceType == .browserExtension { return .ytDlp }
     return .native
+}
+
+private func isHLSPlaylist(_ url: URL) -> Bool {
+    url.path.lowercased().contains(".m3u8")
 }
 
 private func findExecutable(_ name: String) -> URL? {
@@ -341,9 +358,27 @@ private func sanitizedFileName(_ value: String) -> String {
 
 private func redactedArguments(_ arguments: [String]) -> String {
     arguments.map { argument in
+        if let url = URL(string: argument), let scheme = url.scheme, ["http", "https"].contains(scheme.lowercased()) {
+            return redactedURLString(url)
+        }
         if argument.count > 180 { return String(argument.prefix(180)) + "…" }
         return argument
     }.joined(separator: " ")
+}
+
+private func redactedURLString(_ url: URL) -> String {
+    guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.queryItems?.isEmpty == false else {
+        return url.absoluteString
+    }
+    components.queryItems = components.queryItems?.map { item in
+        let sensitiveNames = ["token", "signature", "sig", "policy", "key", "jwt"]
+        if sensitiveNames.contains(item.name.lowercased()) {
+            return URLQueryItem(name: item.name, value: "<redacted>")
+        }
+        return item
+    }
+    let value = components.string ?? url.absoluteString
+    return value.count > 240 ? String(value.prefix(240)) + "…" : value
 }
 
 private func validateHTTP(_ response: URLResponse) throws {
