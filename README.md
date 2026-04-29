@@ -1,6 +1,6 @@
 # MacVidCatch
 
-MacVidCatch is a native macOS 13+ Internet Download Manager prototype with browser integration. The user-facing app, `.app` bundle, DMG volume, Swift package, and executable target use the name `MacVidCatch`.
+MacVidCatch is a native macOS 13+ Internet Download Manager with browser integration. The user-facing app, `.app` bundle, DMG volume, Swift package, and executable target use the name `MacVidCatch`.
 
 ## Current Features
 
