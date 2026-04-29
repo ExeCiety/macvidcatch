@@ -29,7 +29,10 @@ struct ContentView: View {
             Button { showingNewDownload = true } label: { Label("New Download", systemImage: "plus") }
             Button { engine?.resumeAll() } label: { Label("Start All", systemImage: "play.fill") }
             Button { engine?.pauseAll() } label: { Label("Pause All", systemImage: "pause.fill") }
+            Button(role: .destructive) { engine?.deleteAllNotDownloading() } label: { Label("Delete All", systemImage: "trash") }
+                .disabled(!store.jobs.contains { $0.status != .downloading })
             Spacer()
+            Button { NSWorkspace.shared.open(AppLogger.logsDirectory) } label: { Label("Logs", systemImage: "doc.text.magnifyingglass") }
             Button { showingSettings = true } label: { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
@@ -42,7 +45,7 @@ struct DownloadListView: View {
 
     var body: some View {
         Table(store.visibleJobs) {
-            TableColumn("File") { job in VStack(alignment: .leading) { Text(job.fileName).fontWeight(.medium); Text(job.domain).foregroundStyle(.secondary).font(.caption) } }
+            TableColumn("File") { job in VStack(alignment: .leading) { Text(job.fileName).fontWeight(.medium); Text(job.domain).foregroundStyle(.secondary).font(.caption); if let error = job.errorCode, job.status == .failed { Text(error).foregroundStyle(.red).font(.caption).lineLimit(3) } } }
             TableColumn("Progress") { job in ProgressView(value: job.progress) { Text(job.status.title) }.frame(width: 180) }
             TableColumn("Speed") { job in Text(formatBytes(job.speedBytesPerSecond) + "/s") }
             TableColumn("Size") { job in Text(job.totalBytes > 0 ? formatBytes(job.totalBytes) : "Unknown") }
@@ -65,6 +68,9 @@ struct DownloadListView: View {
             if job.status == .paused || job.status == .queued { Button("Start") { engine?.start(job.id) } }
             if job.status == .failed { Button("Retry") { engine?.retry(job.id) } }
             if job.status == .downloading || job.status == .queued || job.status == .paused { Button("Cancel") { engine?.cancel(job.id) } }
+            Button("Log") { NSWorkspace.shared.open(AppLogger.jobLogURL(for: job.id)) }
+            Button("Delete", role: .destructive) { engine?.delete(job.id) }
+                .disabled(job.status == .downloading)
         }
         .buttonStyle(.borderless)
     }

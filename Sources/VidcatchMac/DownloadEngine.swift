@@ -13,6 +13,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     func enqueue(url: URL, pageURL: URL? = nil, suggestedTitle: String? = nil, mimeType: String? = nil, destinationFolder: String? = nil, sourceType: DownloadJob.SourceType = .manual) async {
         do {
             let method = preferredDownloadMethod(for: url, mimeType: mimeType, sourceType: sourceType)
+            AppLogger.log("Enqueue url=\(url.absoluteString) pageUrl=\(pageURL?.absoluteString ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) method=\(method.rawValue)")
             let metadata = method == .ytDlp ? ytDlpMetadata(for: url, title: suggestedTitle) : try await probe(url)
             let folder = destinationFolder ?? store.settings.defaultDownloadFolder
             var job = DownloadJob(
@@ -27,14 +28,17 @@ final class DownloadEngine: NSObject, ObservableObject {
                 downloadMethod: method,
                 domain: url.host ?? ""
             )
+            AppLogger.log("Created job id=\(job.id.uuidString) fileName=\(job.fileName) destination=\(job.destinationPath)", jobID: job.id)
             if store.settings.domainBlocklist.contains(where: { job.domain.localizedCaseInsensitiveContains($0) }) {
                 job.status = .failed; job.errorCode = "Domain diblokir oleh policy pengguna."
+                AppLogger.log("Blocked by user domain policy domain=\(job.domain)", jobID: job.id)
             }
             store.upsert(job)
             startQueue()
         } catch {
             let fileName = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
             let job = DownloadJob(sourceUrl: url, pageUrl: pageURL, fileName: fileName, destinationPath: URL(fileURLWithPath: store.settings.defaultDownloadFolder).appendingPathComponent(fileName).path, status: .failed, sourceType: sourceType, domain: url.host ?? "", errorCode: error.localizedDescription)
+            AppLogger.log("Failed to enqueue url=\(url.absoluteString) error=\(error.localizedDescription)", jobID: job.id)
             store.upsert(job)
         }
     }
@@ -49,6 +53,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     func start(_ id: UUID) {
         guard activeTasks[id] == nil, let job = store.jobs.first(where: { $0.id == id }) else { return }
         pausedIDs.remove(id)
+        AppLogger.log("Start job id=\(id.uuidString) method=\(job.downloadMethod.rawValue) url=\(job.sourceUrl.absoluteString)", jobID: id)
         store.update(id) { $0.status = .downloading; $0.errorCode = nil }
         activeTasks[id] = Task { [weak self] in
             await self?.run(jobID: id, originalJob: job)
@@ -57,6 +62,7 @@ final class DownloadEngine: NSObject, ObservableObject {
 
     func pause(_ id: UUID) {
         pausedIDs.insert(id)
+        AppLogger.log("Pause job id=\(id.uuidString)", jobID: id)
         activeTasks[id]?.cancel(); activeTasks[id] = nil
         activeProcesses[id]?.terminate(); activeProcesses[id] = nil
         store.update(id) { $0.status = .paused }
@@ -64,6 +70,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     }
 
     func cancel(_ id: UUID) {
+        AppLogger.log("Cancel job id=\(id.uuidString)", jobID: id)
         activeTasks[id]?.cancel(); activeTasks[id] = nil
         activeProcesses[id]?.terminate(); activeProcesses[id] = nil
         store.update(id) { $0.status = .canceled }
@@ -72,8 +79,37 @@ final class DownloadEngine: NSObject, ObservableObject {
     }
 
     func retry(_ id: UUID) {
+        AppLogger.log("Retry job id=\(id.uuidString)", jobID: id)
         store.update(id) { $0.status = .queued; $0.downloadedBytes = 0; $0.errorCode = nil }
         cleanupPartials(for: id)
+        startQueue()
+    }
+
+    func delete(_ id: UUID) {
+        guard let job = store.jobs.first(where: { $0.id == id }) else { return }
+        guard job.status != .downloading else {
+            AppLogger.log("Delete ignored because job is downloading id=\(id.uuidString)", jobID: id)
+            return
+        }
+        AppLogger.log("Delete job id=\(id.uuidString) status=\(job.status.rawValue)", jobID: id)
+        activeTasks[id]?.cancel(); activeTasks[id] = nil
+        activeProcesses[id]?.terminate(); activeProcesses[id] = nil
+        pausedIDs.remove(id)
+        cleanupPartials(for: id)
+        store.remove(id)
+        startQueue()
+    }
+
+    func deleteAllNotDownloading() {
+        let removable = store.jobs.filter { $0.status != .downloading }
+        AppLogger.log("Delete all non-downloading jobs count=\(removable.count)")
+        for job in removable {
+            activeTasks[job.id]?.cancel(); activeTasks[job.id] = nil
+            activeProcesses[job.id]?.terminate(); activeProcesses[job.id] = nil
+            pausedIDs.remove(job.id)
+            cleanupPartials(for: job.id)
+        }
+        store.removeAllNotDownloading()
         startQueue()
     }
 
@@ -88,12 +124,14 @@ final class DownloadEngine: NSObject, ObservableObject {
                 let latest = store.jobs.first(where: { $0.id == jobID }) ?? originalJob
                 try await download(job: latest)
                 guard !Task.isCancelled else { return }
+                AppLogger.log("Completed job id=\(jobID.uuidString)", jobID: jobID)
                 store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0 }
                 notify(title: "Download selesai", body: latest.fileName)
                 return
             } catch {
                 if pausedIDs.contains(jobID) || Task.isCancelled { return }
                 attempts += 1
+                AppLogger.log("Attempt \(attempts) failed for job id=\(jobID.uuidString): \(error.localizedDescription)", jobID: jobID)
                 if attempts > store.settings.retryCount {
                     store.update(jobID) { $0.status = .failed; $0.errorCode = error.localizedDescription; $0.speedBytesPerSecond = 0 }
                     notify(title: "Download gagal", body: error.localizedDescription)
@@ -201,6 +239,7 @@ final class DownloadEngine: NSObject, ObservableObject {
 
     private func ytDlpDownload(job: DownloadJob) async throws {
         guard let executable = findExecutable("yt-dlp") else {
+            AppLogger.log("yt-dlp executable not found", jobID: job.id)
             throw NSError(domain: "Download", code: 2, userInfo: [NSLocalizedDescriptionKey: "yt-dlp belum terinstall. Install dengan: brew install yt-dlp aria2"])
         }
 
@@ -208,6 +247,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         let process = Process()
         process.executableURL = executable
         process.arguments = ytDlpArguments(for: job, outputTemplate: outputTemplate)
+        AppLogger.log("Run yt-dlp executable=\(executable.path) args=\(redactedArguments(process.arguments ?? []))", jobID: job.id)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -221,9 +261,12 @@ final class DownloadEngine: NSObject, ObservableObject {
         await waitForProcess(process)
         activeProcesses[job.id] = nil
         let output = await reader.value
+        let outputText = String(data: output, encoding: .utf8) ?? ""
+        AppLogger.writeJobOutput(outputText, jobID: job.id)
+        AppLogger.log("yt-dlp exited status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)", jobID: job.id)
 
         guard process.terminationStatus == 0 else {
-            let message = String(data: output, encoding: .utf8)?.split(separator: "\n").suffix(4).joined(separator: "\n").nilIfEmpty ?? "yt-dlp gagal dengan kode \(process.terminationStatus)."
+            let message = outputText.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "yt-dlp gagal dengan kode \(process.terminationStatus)."
             throw NSError(domain: "Download", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
         }
 
@@ -255,6 +298,7 @@ final class DownloadEngine: NSObject, ObservableObject {
             ((try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < ((try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
         }) else { return }
         let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        AppLogger.log("yt-dlp output file=\(file.path) size=\(size)", jobID: job.id)
         store.update(job.id) { $0.fileName = file.lastPathComponent; $0.destinationPath = file.path; $0.totalBytes = size; $0.downloadedBytes = size }
     }
 
@@ -293,6 +337,13 @@ private func sanitizedFileName(_ value: String) -> String {
     let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>")
     let cleaned = value.components(separatedBy: invalid).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned.nilIfEmpty ?? "video"
+}
+
+private func redactedArguments(_ arguments: [String]) -> String {
+    arguments.map { argument in
+        if argument.count > 180 { return String(argument.prefix(180)) + "…" }
+        return argument
+    }.joined(separator: " ")
 }
 
 private func validateHTTP(_ response: URLResponse) throws {

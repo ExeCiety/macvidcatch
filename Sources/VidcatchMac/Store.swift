@@ -18,6 +18,14 @@ final class AppStore: ObservableObject {
         jobs[index].updatedAt = Date()
     }
 
+    func remove(_ id: UUID) {
+        jobs.removeAll { $0.id == id }
+    }
+
+    func removeAllNotDownloading() {
+        jobs.removeAll { $0.status != .downloading }
+    }
+
     func load() { jobs = Persistence.loadJobs() }
     private func saveJobs() { Persistence.saveJobs(jobs) }
 }
