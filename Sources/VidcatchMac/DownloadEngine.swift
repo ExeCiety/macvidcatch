@@ -245,14 +245,39 @@ final class DownloadEngine: NSObject, ObservableObject {
         }
 
         let outputTemplate = ytDlpOutputTemplate(for: job)
+        var arguments = ytDlpArguments(for: job, outputTemplate: outputTemplate)
+        var result = try await runYtDlp(executable: executable, arguments: arguments, jobID: job.id)
+
+        if result.status != 0, isYouTubeURL(job.sourceUrl), isYouTubeChallengeFailure(result.output) {
+            AppLogger.log("yt-dlp YouTube challenge failure detected; retry with alternate YouTube client", jobID: job.id)
+            arguments = ytDlpArguments(for: job, outputTemplate: outputTemplate, youtubeFallback: true)
+            result = try await runYtDlp(executable: executable, arguments: arguments, jobID: job.id)
+        }
+
+        if result.status != 0, isYouTubeURL(job.sourceUrl), isYouTubeForbiddenFailure(result.output) {
+            AppLogger.log("yt-dlp YouTube 403 detected; retry without external downloader and constrained formats", jobID: job.id)
+            arguments = ytDlpArguments(for: job, outputTemplate: outputTemplate, youtubeForbiddenFallback: true)
+            result = try await runYtDlp(executable: executable, arguments: arguments, jobID: job.id)
+        }
+
+        guard result.status == 0 else {
+            let message = ytDlpErrorMessage(from: result.output, status: result.status)
+            throw NSError(domain: "Download", code: Int(result.status), userInfo: [NSLocalizedDescriptionKey: message])
+        }
+
+        updateCompletedYtDlpJob(job)
+    }
+
+    private func runYtDlp(executable: URL, arguments: [String], jobID: UUID) async throws -> (output: String, status: Int32) {
         let process = Process()
         process.executableURL = executable
-        process.arguments = ytDlpArguments(for: job, outputTemplate: outputTemplate)
-        AppLogger.log("Run yt-dlp executable=\(executable.path) args=\(redactedArguments(process.arguments ?? []))", jobID: job.id)
+        process.arguments = arguments
+        process.environment = processEnvironmentWithToolPaths()
+        AppLogger.log("Run yt-dlp executable=\(executable.path) args=\(redactedArguments(process.arguments ?? []))", jobID: jobID)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        activeProcesses[job.id] = process
+        activeProcesses[jobID] = process
 
         try process.run()
         let reader = Task.detached { [weak pipe] in
@@ -260,18 +285,12 @@ final class DownloadEngine: NSObject, ObservableObject {
             return handle.readDataToEndOfFile()
         }
         await waitForProcess(process)
-        activeProcesses[job.id] = nil
+        activeProcesses[jobID] = nil
         let output = await reader.value
         let outputText = String(data: output, encoding: .utf8) ?? ""
-        AppLogger.writeJobOutput(outputText, jobID: job.id)
-        AppLogger.log("yt-dlp exited status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)", jobID: job.id)
-
-        guard process.terminationStatus == 0 else {
-            let message = outputText.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "yt-dlp gagal dengan kode \(process.terminationStatus)."
-            throw NSError(domain: "Download", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
-        }
-
-        updateCompletedYtDlpJob(job)
+        AppLogger.writeJobOutput(outputText, jobID: jobID)
+        AppLogger.log("yt-dlp exited status=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)", jobID: jobID)
+        return (outputText, process.terminationStatus)
     }
 
     private func ytDlpOutputTemplate(for job: DownloadJob) -> String {
@@ -282,22 +301,31 @@ final class DownloadEngine: NSObject, ObservableObject {
         return destination.deletingPathExtension().appendingPathExtension("%(ext)s").path
     }
 
-    private func ytDlpArguments(for job: DownloadJob, outputTemplate: String) -> [String] {
+    private func ytDlpArguments(for job: DownloadJob, outputTemplate: String, youtubeFallback: Bool = false, youtubeForbiddenFallback: Bool = false) -> [String] {
         var arguments = [
             "--cookies-from-browser", "chrome",
             "--user-agent", defaultBrowserUserAgent,
-            "--downloader", "aria2c",
-            "--downloader-args", "aria2c:-x 8 -s 8 -k 1M",
             "--no-check-certificate",
             "--merge-output-format", "mp4",
             "-N", "5",
             "-o", outputTemplate,
             job.sourceUrl.absoluteString
         ]
+        if !youtubeForbiddenFallback {
+            arguments.insert(contentsOf: ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 8 -s 8 -k 1M"], at: 4)
+        }
+        if youtubeForbiddenFallback {
+            arguments.insert(contentsOf: ["--extractor-args", "youtube:player_client=default,-tv,web_safari,web_embedded"], at: 0)
+            arguments.insert(contentsOf: ["--format", "bv*[height<=2160][vcodec!^=av01]+ba/bv*[height<=1440]+ba/best[height<=1080]/best"], at: 0)
+            arguments.insert(contentsOf: ["--http-chunk-size", "10M"], at: 0)
+        }
+        if youtubeFallback {
+            arguments.insert(contentsOf: ["--extractor-args", "youtube:player_client=web_safari,web_embedded,web"], at: 0)
+        }
         if isHLSPlaylist(job.sourceUrl) {
             arguments.insert("--force-generic-extractor", at: 0)
         }
-        if let referer = job.pageUrl?.absoluteString.nilIfEmpty {
+        if let referer = ytDlpReferer(for: job)?.absoluteString.nilIfEmpty {
             arguments.insert(contentsOf: ["--referer", referer], at: 0)
         }
         return arguments
@@ -324,6 +352,7 @@ final class DownloadEngine: NSObject, ObservableObject {
 }
 
 private let defaultBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+private let toolSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/opt/node/bin", "/usr/local/opt/node/bin"]
 
 private func preferredDownloadMethod(for url: URL, mimeType: String?, sourceType: DownloadJob.SourceType) -> DownloadJob.DownloadMethod {
     let mime = mimeType?.lowercased() ?? ""
@@ -336,8 +365,47 @@ private func isHLSPlaylist(_ url: URL) -> Bool {
     url.path.lowercased().contains(".m3u8")
 }
 
+private func isYouTubeURL(_ url: URL) -> Bool {
+    guard let host = url.host?.lowercased() else { return false }
+    return host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com")
+}
+
+private func ytDlpReferer(for job: DownloadJob) -> URL? {
+    if isYouTubeURL(job.sourceUrl) { return job.sourceUrl }
+    return job.pageUrl
+}
+
+private func isYouTubeChallengeFailure(_ output: String) -> Bool {
+    let lower = output.lowercased()
+    return lower.contains("signature solving failed") || lower.contains("n challenge solving failed") || lower.contains("the page needs to be reloaded")
+}
+
+private func isYouTubeForbiddenFailure(_ output: String) -> Bool {
+    let lower = output.lowercased()
+    return lower.contains("http error 403") || lower.contains("403: forbidden") || lower.contains("unable to download video data")
+}
+
+private func ytDlpErrorMessage(from output: String, status: Int32) -> String {
+    var message = output.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "yt-dlp gagal dengan kode \(status)."
+    if isYouTubeChallengeFailure(output) {
+        message += "\n\nCoba update dependency: brew upgrade yt-dlp node deno aria2, lalu reload halaman YouTube dan coba lagi."
+    } else if isYouTubeForbiddenFailure(output) {
+        message += "\n\nCoba reload video YouTube, pastikan bisa diputar di Chrome yang sama, lalu update yt-dlp: brew upgrade yt-dlp."
+    }
+    return message
+}
+
+private func processEnvironmentWithToolPaths() -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    let existingPath = environment["PATH"] ?? ""
+    var seen = Set<String>()
+    let path = (toolSearchPaths + existingPath.split(separator: ":").map(String.init)).filter { seen.insert($0).inserted }.joined(separator: ":")
+    environment["PATH"] = path
+    return environment
+}
+
 private func findExecutable(_ name: String) -> URL? {
-    let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map { URL(fileURLWithPath: $0).appendingPathComponent(name) }
+    let candidates = toolSearchPaths.map { URL(fileURLWithPath: $0).appendingPathComponent(name) }
     return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
 }
 
@@ -352,7 +420,8 @@ private func waitForProcess(_ process: Process) async {
 
 private func sanitizedFileName(_ value: String) -> String {
     let invalid = CharacterSet(charactersIn: "/\\?%*|\"<>")
-    let cleaned = value.components(separatedBy: invalid).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+    let decoded = value.removingPercentEncoding ?? value
+    let cleaned = decoded.components(separatedBy: invalid).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned.nilIfEmpty ?? "video"
 }
 
