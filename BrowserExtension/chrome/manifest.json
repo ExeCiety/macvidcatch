@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "MacVidCatch Connector",
+  "version": "0.1.0",
+  "description": "Detects legal direct media files and sends downloads to MacVidCatch.",
+  "permissions": ["webRequest", "storage", "activeTab"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "service_worker.js" },
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "css": ["content.css"] }]
+}

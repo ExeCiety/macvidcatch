@@ -1,0 +1,72 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Xcode / SwiftPM build artifacts
+.build/
+DerivedData/
+.swiftpm/
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+*.xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# App packaging outputs
+*.app
+*.dmg
+*.pkg
+*.ipa
+*.xcarchive
+*.xcresult
+*.dSYM
+*.dSYM.zip
+
+# Code signing / notarization secrets
+*.cer
+*.p12
+*.mobileprovision
+*.provisionprofile
+*.entitlements.local
+notarytool-profile.json
+
+# Runtime data / temporary downloads
+*.part
+*.download
+*.tmp
+tmp/
+temp/
+Downloads/
+
+# Logs and crash reports
+*.log
+*.crash
+*.ips
+logs/
+
+# Browser extension generated packages
+BrowserExtension/**/*.zip
+BrowserExtension/**/*.crx
+BrowserExtension/**/*.pem
+BrowserExtension/**/web-ext-artifacts/
+
+# IDE/editor local settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment/local config
+.env
+.env.*
+!.env.example
+*.local
