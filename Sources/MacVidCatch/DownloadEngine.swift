@@ -328,38 +328,37 @@ final class DownloadEngine: NSObject, ObservableObject {
     private func ytDlpArguments(for job: DownloadJob, outputTemplate: String, youtubeFallback: Bool = false, youtubeForbiddenFallback: Bool = false) -> [String] {
         let browser = ytDlpCookieBrowser(for: job)
         let cookieArguments = ytDlpCookieArguments(for: job, browser: browser, cookiesProfilePath: store.settings.firefoxCookiesPath)
-        var arguments = cookieArguments + [
-            "--user-agent", defaultBrowserUserAgent(for: browser),
-            "--no-check-certificate",
-            "-N", "5",
-            "-o", outputTemplate,
-            job.sourceUrl.absoluteString
-        ]
-        if !isHLSPlaylist(job.sourceUrl) {
-            arguments.insert(contentsOf: ["--merge-output-format", "mp4"], at: cookieArguments.count + 4)
-        }
-        if let format = ytDlpFormatSelector(for: job.preferredQuality) {
-            arguments.insert(contentsOf: ["--format", format], at: 0)
-        }
-        if !youtubeForbiddenFallback {
-            let downloaderArgumentIndex = cookieArguments.count + 2
-            arguments.insert(contentsOf: ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 8 -s 8 -k 1M"], at: downloaderArgumentIndex)
-        }
-        if youtubeForbiddenFallback {
-            arguments.insert(contentsOf: ["--extractor-args", "youtube:player_client=default,-tv,web_safari,web_embedded"], at: 0)
-            arguments.insert(contentsOf: ["--format", "bv*[height<=2160][vcodec!^=av01]+ba/bv*[height<=1440]+ba/best[height<=1080]/best"], at: 0)
-            arguments.insert(contentsOf: ["--http-chunk-size", "10M"], at: 0)
-        }
-        if youtubeFallback {
-            arguments.insert(contentsOf: ["--extractor-args", "youtube:player_client=web_safari,web_embedded,web"], at: 0)
+        var arguments: [String] = []
+        if let referer = ytDlpReferer(for: job)?.absoluteString.nilIfEmpty {
+            arguments += ["--referer", referer]
         }
         if isHLSPlaylist(job.sourceUrl) {
-            arguments.insert("--force-generic-extractor", at: 0)
-            arguments.insert("--hls-use-mpegts", at: 0)
+            arguments += ["--hls-use-mpegts", "--force-generic-extractor"]
         }
-        if let referer = ytDlpReferer(for: job)?.absoluteString.nilIfEmpty {
-            arguments.insert(contentsOf: ["--referer", referer], at: 0)
+        if youtubeFallback {
+            arguments += ["--extractor-args", "youtube:player_client=web_safari,web_embedded,web"]
         }
+        if youtubeForbiddenFallback {
+            arguments += ["--http-chunk-size", "10M"]
+            arguments += ["--format", "bv*[height<=2160][vcodec!^=av01]+ba/bv*[height<=1440]+ba/best[height<=1080]/best"]
+            arguments += ["--extractor-args", "youtube:player_client=default,-tv,web_safari,web_embedded"]
+        } else if let format = ytDlpFormatSelector(for: job.preferredQuality) {
+            arguments += ["--format", format]
+        }
+
+        arguments += cookieArguments
+        if !youtubeForbiddenFallback {
+            arguments += ["--downloader", "aria2c", "--downloader-args", "aria2c:-x 8 -s 8 -k 1M"]
+        }
+        arguments += [
+            "--user-agent", defaultBrowserUserAgent(for: browser),
+            "--no-check-certificate",
+            "-N", "5"
+        ]
+        if !isHLSPlaylist(job.sourceUrl) {
+            arguments += ["--merge-output-format", "mp4"]
+        }
+        arguments += ["-o", outputTemplate, job.sourceUrl.absoluteString]
         return arguments
     }
 
