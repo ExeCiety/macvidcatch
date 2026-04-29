@@ -2,7 +2,7 @@ let candidate = null;
 let button = null;
 let lastYouTubeUrl = '';
 
-chrome.runtime.onMessage.addListener(message => {
+browser.runtime.onMessage.addListener(message => {
   if (message.type !== 'MDMPRO_MEDIA_CANDIDATE') return;
   setCandidate(message);
 });
@@ -36,7 +36,7 @@ function detectYouTubePageCandidate() {
   if (!pageUrl || pageUrl === lastYouTubeUrl) return;
   lastYouTubeUrl = pageUrl;
 
-  chrome.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false }, config => {
+  browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false }).then(config => {
     const hostname = window.location.hostname;
     const blocked = config.blocklist.some(domain => domain && hostname.includes(domain));
     const allowed = !config.allowlistMode || config.allowlist.some(domain => domain && hostname.includes(domain));
@@ -51,7 +51,7 @@ function detectYouTubePageCandidate() {
       },
       policy: { isAllowedByUser: true, isAllowedByDomainPolicy: allowed && !blocked }
     });
-  });
+  }).catch(() => {});
 }
 
 function youtubeDownloadUrl() {
@@ -95,7 +95,7 @@ function sendToApp() {
     pageUrl: window.location.href,
     title: candidate.media.title || document.title || '',
     mimeType: candidate.media.mimeType || '',
-    browser: 'chrome'
+    browser: 'firefox'
   });
   const target = `macvidcatch://download?${params.toString()}`;
   window.location.href = target;

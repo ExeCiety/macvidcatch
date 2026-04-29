@@ -33,7 +33,8 @@ final class DeepLinkRouter: ObservableObject {
         let pageURL = components.queryItems?.first(where: { $0.name == "pageUrl" })?.value.flatMap(URL.init(string:))
         let title = components.queryItems?.first(where: { $0.name == "title" })?.value
         let mimeType = components.queryItems?.first(where: { $0.name == "mimeType" })?.value
-        await engine?.enqueue(url: downloadURL, pageURL: pageURL, suggestedTitle: title, mimeType: mimeType, sourceType: .browserExtension)
+        let browser = components.queryItems?.first(where: { $0.name == "browser" })?.value
+        await engine?.enqueue(url: downloadURL, pageURL: pageURL, suggestedTitle: title, mimeType: mimeType, sourceType: .browserExtension, sourceBrowser: browser)
     }
 }
 

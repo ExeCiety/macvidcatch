@@ -10,10 +10,10 @@ final class DownloadEngine: NSObject, ObservableObject {
 
     init(store: AppStore) { self.store = store }
 
-    func enqueue(url: URL, pageURL: URL? = nil, suggestedTitle: String? = nil, mimeType: String? = nil, destinationFolder: String? = nil, sourceType: DownloadJob.SourceType = .manual) async {
+    func enqueue(url: URL, pageURL: URL? = nil, suggestedTitle: String? = nil, mimeType: String? = nil, destinationFolder: String? = nil, sourceType: DownloadJob.SourceType = .manual, sourceBrowser: String? = nil) async {
         do {
             let method = preferredDownloadMethod(for: url, mimeType: mimeType, sourceType: sourceType)
-            AppLogger.log("Enqueue url=\(redactedURLString(url)) pageUrl=\(pageURL.map(redactedURLString) ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) method=\(method.rawValue)")
+            AppLogger.log("Enqueue url=\(redactedURLString(url)) pageUrl=\(pageURL.map(redactedURLString) ?? "-") mimeType=\(mimeType ?? "-") source=\(sourceType.rawValue) browser=\(sourceBrowser ?? "-") method=\(method.rawValue)")
             let metadata = method == .ytDlp ? ytDlpMetadata(for: url, title: suggestedTitle) : try await probe(url)
             let folder = destinationFolder ?? store.settings.defaultDownloadFolder
             var job = DownloadJob(
@@ -26,7 +26,8 @@ final class DownloadEngine: NSObject, ObservableObject {
                 supportsResume: metadata.supportsResume,
                 sourceType: sourceType,
                 downloadMethod: method,
-                domain: url.host ?? ""
+                domain: url.host ?? "",
+                sourceBrowser: sourceBrowser
             )
             AppLogger.log("Created job id=\(job.id.uuidString) fileName=\(job.fileName) destination=\(job.destinationPath)", jobID: job.id)
             if store.settings.domainBlocklist.contains(where: { job.domain.localizedCaseInsensitiveContains($0) }) {
@@ -37,7 +38,7 @@ final class DownloadEngine: NSObject, ObservableObject {
             startQueue()
         } catch {
             let fileName = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
-            let job = DownloadJob(sourceUrl: url, pageUrl: pageURL, fileName: fileName, destinationPath: URL(fileURLWithPath: store.settings.defaultDownloadFolder).appendingPathComponent(fileName).path, status: .failed, sourceType: sourceType, domain: url.host ?? "", errorCode: error.localizedDescription)
+            let job = DownloadJob(sourceUrl: url, pageUrl: pageURL, fileName: fileName, destinationPath: URL(fileURLWithPath: store.settings.defaultDownloadFolder).appendingPathComponent(fileName).path, status: .failed, sourceType: sourceType, domain: url.host ?? "", errorCode: error.localizedDescription, sourceBrowser: sourceBrowser)
             AppLogger.log("Failed to enqueue url=\(redactedURLString(url)) error=\(error.localizedDescription)", jobID: job.id)
             store.upsert(job)
         }
@@ -323,9 +324,10 @@ final class DownloadEngine: NSObject, ObservableObject {
     }
 
     private func ytDlpArguments(for job: DownloadJob, outputTemplate: String, youtubeFallback: Bool = false, youtubeForbiddenFallback: Bool = false) -> [String] {
+        let browser = ytDlpCookieBrowser(for: job)
         var arguments = [
-            "--cookies-from-browser", "chrome",
-            "--user-agent", defaultBrowserUserAgent,
+            "--cookies-from-browser", browser,
+            "--user-agent", defaultBrowserUserAgent(for: browser),
             "--no-check-certificate",
             "--merge-output-format", "mp4",
             "-N", "5",
@@ -373,7 +375,8 @@ final class DownloadEngine: NSObject, ObservableObject {
     }
 }
 
-private let defaultBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+private let chromeBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+private let firefoxBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0"
 private let toolSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/opt/node/bin", "/usr/local/opt/node/bin"]
 
 private struct YtDlpProgress {
@@ -413,6 +416,17 @@ private func preferredDownloadMethod(for url: URL, mimeType: String?, sourceType
     if isHLSPlaylist(url) || mime.contains("mpegurl") || mime.contains("x-mpegurl") { return .ytDlp }
     if sourceType == .browserExtension { return .ytDlp }
     return .native
+}
+
+private func ytDlpCookieBrowser(for job: DownloadJob) -> String {
+    switch job.sourceBrowser?.lowercased() {
+    case "firefox": return "firefox"
+    default: return "chrome"
+    }
+}
+
+private func defaultBrowserUserAgent(for browser: String) -> String {
+    browser == "firefox" ? firefoxBrowserUserAgent : chromeBrowserUserAgent
 }
 
 private func isHLSPlaylist(_ url: URL) -> Bool {

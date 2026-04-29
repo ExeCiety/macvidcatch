@@ -1,0 +1,29 @@
+{
+  "manifest_version": 2,
+  "name": "MacVidCatch Connector",
+  "version": "0.1.0",
+  "description": "Detects legal direct media files and sends downloads to MacVidCatch.",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "activeTab",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "macvidcatch-connector@example.local",
+      "strict_min_version": "109.0"
+    }
+  }
+}
