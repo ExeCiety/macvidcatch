@@ -45,11 +45,22 @@ struct DownloadListView: View {
 
     var body: some View {
         Table(store.visibleJobs) {
-            TableColumn("File") { job in VStack(alignment: .leading) { Text(job.fileName).fontWeight(.medium); Text(job.domain).foregroundStyle(.secondary).font(.caption); if let error = job.errorCode, job.status == .failed { Text(error).foregroundStyle(.red).font(.caption).lineLimit(3) } } }
-            TableColumn("Progress") { job in ProgressView(value: job.progress) { Text(job.status.title) }.frame(width: 180) }
+            TableColumn("File") { job in
+                VStack(alignment: .leading) {
+                    Text(job.fileName).fontWeight(.medium)
+                    Text(job.domain).foregroundStyle(.secondary).font(.caption)
+                    if let error = job.errorCode, job.status == .failed { Text(error).foregroundStyle(.red).font(.caption).lineLimit(3) }
+                }
+            }
+            .width(min: 220, ideal: 360)
+            TableColumn("Progress") { job in ProgressView(value: job.progress) { Text(job.status.title) }.frame(width: 150) }
+                .width(ideal: 170)
             TableColumn("Speed") { job in Text(formatBytes(job.speedBytesPerSecond) + "/s") }
+                .width(min: 72, ideal: 92, max: 120)
             TableColumn("Size") { job in Text(job.totalBytes > 0 ? formatBytes(job.totalBytes) : "Unknown") }
+                .width(min: 72, ideal: 92, max: 120)
             TableColumn("Actions") { job in actionButtons(for: job) }
+                .width(min: 112, ideal: 132, max: 156)
         }
         .overlay {
             if store.visibleJobs.isEmpty {
@@ -63,16 +74,24 @@ struct DownloadListView: View {
     }
 
     @ViewBuilder private func actionButtons(for job: DownloadJob) -> some View {
-        HStack {
-            if job.status == .downloading { Button("Pause") { engine?.pause(job.id) } }
-            if job.status == .paused || job.status == .queued { Button("Start") { engine?.start(job.id) } }
-            if job.status == .failed { Button("Retry") { engine?.retry(job.id) } }
-            if job.status == .downloading || job.status == .queued || job.status == .paused { Button("Cancel") { engine?.cancel(job.id) } }
-            Button("Log") { NSWorkspace.shared.open(AppLogger.jobLogURL(for: job.id)) }
-            Button("Delete", role: .destructive) { engine?.delete(job.id) }
+        HStack(spacing: 6) {
+            if job.status == .downloading { iconButton("Pause", systemImage: "pause.fill") { engine?.pause(job.id) } }
+            if job.status == .paused || job.status == .queued { iconButton("Start", systemImage: "play.fill") { engine?.start(job.id) } }
+            if job.status == .failed { iconButton("Retry", systemImage: "arrow.clockwise") { engine?.retry(job.id) } }
+            if job.status == .downloading || job.status == .queued || job.status == .paused { iconButton("Cancel", systemImage: "xmark") { engine?.cancel(job.id) } }
+            iconButton("Open Log", systemImage: "doc.text") { NSWorkspace.shared.open(AppLogger.jobLogURL(for: job.id)) }
+            iconButton("Delete", systemImage: "trash", role: .destructive) { engine?.delete(job.id) }
                 .disabled(job.status == .downloading)
         }
         .buttonStyle(.borderless)
+    }
+
+    private func iconButton(_ title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 18, height: 18)
+        }
+        .help(title)
     }
 }
 
