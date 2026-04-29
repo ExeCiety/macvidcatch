@@ -6,10 +6,10 @@ MacVidCatch is a native macOS 13+ Internet Download Manager prototype with brows
 
 - SwiftUI desktop app with a downloads list, status filters, manual URL dialog, settings view, and menu bar controls.
 - Native HTTP/HTTPS downloader with metadata probing, queue management, pause/resume, retry, file-size validation, partial-file cleanup, and segmented downloads when the server supports `Accept-Ranges: bytes`.
-- Basic global speed limiting and local persistence under Application Support.
-- Custom URL scheme integration via `macvidcatch://download?...`.
-- Browser-originated video and HLS downloads routed through `yt-dlp`.
-- Chrome Manifest V3 and Firefox WebExtensions prototypes with direct media detection, legal-first DRM checks, and a floating download button.
+- Basic global speed limiting, notifications, and local persistence under Application Support.
+- Custom URL scheme integration via `macvidcatch://download?...`, including browser, MIME type, page URL, title, and preferred quality parameters.
+- Browser-originated video, HLS, and YouTube page downloads routed through `yt-dlp`.
+- Chrome Manifest V3 and Firefox WebExtensions prototypes with direct media detection, YouTube page detection, legal-first DRM checks, HLS quality selection, and a floating download button.
 - Local scripts for building the `.app` bundle and DMG installer.
 - Diagnostic logs for app-level events and per-download `yt-dlp` output.
 
@@ -23,7 +23,7 @@ MacVidCatch is a native macOS 13+ Internet Download Manager prototype with brows
 brew install yt-dlp aria2 ffmpeg
 ```
 
-MacVidCatch looks for `yt-dlp` in common Homebrew and system locations such as `/opt/homebrew/bin` and `/usr/local/bin`. HLS-to-MP4 output requires `ffmpeg`, which `yt-dlp` uses for the final remux step.
+MacVidCatch looks for `yt-dlp`, `aria2c`, and `ffmpeg` in common Homebrew and system locations such as `/opt/homebrew/bin` and `/usr/local/bin`. `aria2c` is used by `yt-dlp` for parallel external downloads when possible. HLS-to-MP4 output may require `ffmpeg` for the final remux step.
 
 ## Build And Run
 
@@ -62,7 +62,16 @@ The app registers the custom URL scheme:
 macvidcatch://download?url=...
 ```
 
-The browser extensions send the media URL plus page URL, title, MIME type, and source browser to the app. Browser-originated downloads and `.m3u8` / HLS media use the `yt-dlp` path, while native direct HTTP downloads continue to use the built-in downloader.
+The browser extensions send the media URL plus page URL, title, MIME type, selected quality, and source browser to the app. Browser-originated downloads and `.m3u8` / HLS media use the `yt-dlp` path, while native direct HTTP downloads continue to use the built-in downloader.
+
+Supported query parameters used by the app are:
+
+- `url` — required media or page URL to download.
+- `pageUrl` — optional originating page URL, used as the `yt-dlp` referer when appropriate.
+- `title` — optional suggested display/output name.
+- `mimeType` — optional media type used to choose the native or `yt-dlp` path.
+- `browser` — optional source browser hint; currently `chrome` or `firefox`.
+- `quality` — optional preferred quality; `best` or a height such as `1080`, `720`, `480`, or `360`.
 
 To load the Chrome extension prototype:
 
@@ -70,20 +79,24 @@ To load the Chrome extension prototype:
 2. Enable Developer Mode.
 3. Choose **Load unpacked**.
 4. Select `BrowserExtension/chrome`.
-5. When direct media is detected, use the floating button to open the app through the URL scheme.
+5. When direct media, HLS, or a supported YouTube page is detected, use the floating button to open the app through the URL scheme.
 
 To load the Firefox extension prototype temporarily:
 
 1. Open `about:debugging#/runtime/this-firefox`.
 2. Choose **Load Temporary Add-on…**.
 3. Select `BrowserExtension/firefox/manifest.json`.
-4. When direct media is detected, use the floating button to open the app through the URL scheme.
+4. When direct media, HLS, or a supported YouTube page is detected, use the floating button to open the app through the URL scheme.
 
 ## Browser Video Downloads
 
-For video and HLS media sent by a browser extension, MacVidCatch runs `yt-dlp` with the originating page referer, matching browser user agent, matching Chrome or Firefox cookies, and `aria2c` as the parallel downloader. HLS playlists are remuxed to MP4 through `ffmpeg` after download.
+For video, HLS, and YouTube candidates sent by a browser extension, MacVidCatch first shows a native save dialog, then runs `yt-dlp` with the originating page referer, a matching browser user agent, browser cookies when available, and `aria2c` as the parallel downloader except for some fallback paths. HLS playlists are downloaded with MPEG-TS handling and remuxed to MP4 through `ffmpeg` after download when needed.
 
-Make sure you are already signed in with the same Chrome or Firefox profile when downloading media that requires authorized access. If Firefox is installed outside the standard profile location, set **Settings → Browser Integration → Firefox cookies/profile path** to the Firefox `Profiles` folder, a specific profile folder, or `cookies.sqlite`. MacVidCatch does not bypass DRM, paywalls, encryption, or access controls.
+The extension asks for a quality when it sees HLS playlists or supported YouTube pages. The app passes that choice to `yt-dlp` as a height-constrained format selector, for example `720` means best video/audio at 720p or lower. Choosing `best` leaves format selection to `yt-dlp`.
+
+Make sure you are already signed in with the same browser profile when downloading media that requires authorized access. The app defaults to a detected cookies/profile path from common Firefox, Firefox Developer Edition, LibreWolf, Waterfox, Chrome, Chromium, Edge, or Brave locations. If automatic detection is wrong, set **Settings → Browser Integration → Browser cookies/profile path** to a browser `Profiles` folder, a specific profile folder, `cookies.sqlite`, or a Chromium-style profile folder containing `Cookies`. MacVidCatch does not bypass DRM, paywalls, encryption, or access controls.
+
+For YouTube, the extension detects regular watch pages, Shorts, and `youtu.be` links. If `yt-dlp` hits known YouTube challenge or 403 failures, the app retries with conservative fallback extractor/client and format options and logs a dependency update hint.
 
 ## Logging And Data
 
@@ -99,6 +112,8 @@ Logs are written to:
 - `download-<UUID>.log` contains per-download details and captured `yt-dlp` output.
 
 Use the app's **Logs** button to open the logs directory when diagnosing failed downloads.
+
+Persisted job and settings JSON are stored in the same `VidcatchMac` Application Support folder for compatibility with earlier prototype builds.
 
 ## Validation
 
@@ -120,11 +135,11 @@ MacVidCatch is intended only for downloads the user is authorized to access. The
 
 Current safety behavior in this prototype:
 
-- The browser extensions only surface direct media candidates for common direct video URLs and HLS playlists such as `.mp4`, `.mov`, `.webm`, `.m4v`, and `.m3u8`.
+- The browser extensions surface direct media candidates for common video URLs and HLS playlists such as `.mp4`, `.mov`, `.webm`, `.m4v`, and `.m3u8`, plus supported YouTube page URLs for `yt-dlp` handling.
 - The extensions perform best-effort DRM detection from response headers, including known DRM header names and `keyformat`, `widevine`, `playready`, or `fairplay` markers. If a candidate appears protected, the floating button is not shown and the user sees an explanatory notice.
 - The extensions honor their local domain blocklist and allowlist-mode settings before sending a candidate to the app. The app also applies its persisted domain blocklist when enqueuing jobs.
 - Browser-originated media and HLS jobs are delegated to `yt-dlp`; native manual HTTP/HTTPS downloads continue to use the built-in downloader unless the URL or MIME type indicates HLS.
-- `yt-dlp` is invoked with the originating page referer, browser-specific user agent, `--cookies-from-browser chrome` or `--cookies-from-browser firefox`, `aria2c`, and HLS-friendly output handling. This is for content the user is already authorized to access in their local browser profile, not for bypassing restrictions.
+- `yt-dlp` is invoked with the originating page referer, browser-specific user agent, browser cookies when available, `aria2c`, optional quality constraints, and HLS-friendly output handling. This is for content the user is already authorized to access in their local browser profile, not for bypassing restrictions.
 - App command logs redact common sensitive URL query parameters such as `token`, `signature`, `sig`, `policy`, `key`, and `jwt`; however, per-download `yt-dlp` output is captured for diagnostics and may include upstream tool output. Avoid sharing logs publicly without reviewing them first.
 
 The DRM and policy checks are intentionally conservative, best-effort safeguards, not a guarantee that every protected or restricted stream can be identified. Users remain responsible for following the source site's terms and only downloading content they are allowed to save.
