@@ -4,6 +4,8 @@ let qualityDialog = null;
 let lastYouTubeUrl = '';
 let lastLocationHref = window.location.href;
 let youtubeDetectionTimer = null;
+const hlsAnalysisCache = new Map();
+const recentHlsCandidates = [];
 
 browser.runtime.onMessage.addListener(message => {
   if (message.type !== 'MDMPRO_MEDIA_CANDIDATE') return;
@@ -11,6 +13,7 @@ browser.runtime.onMessage.addListener(message => {
     scheduleYouTubeDetection();
     return;
   }
+  rememberHlsCandidate(message.media?.url);
   setCandidate(message);
 });
 
@@ -18,32 +21,32 @@ detectYouTubePageCandidate();
 setInterval(detectYouTubePageCandidate, 1000);
 installYouTubeSpaNavigationHooks();
 
-async function setCandidate(message, options = {}) {
-  if (isHlsMedia(message.media)) {
-    const qualityOptions = await parseHlsQualities(message.media.url);
-    if (qualityOptions.length > 0) message.media.qualityOptions = qualityOptions;
-  }
-
+function setCandidate(message, options = {}) {
+  const isSameMedia = candidate?.media?.url === message.media?.url;
   const nextPriority = mediaPriority(message.media);
   const currentPriority = candidate ? mediaPriority(candidate.media) : -1;
   if (!options.force) {
     if (candidate && nextPriority < currentPriority) return;
     if (candidate && nextPriority === currentPriority && candidate.media.qualityOptions?.length) return;
+    if (qualityDialog && candidate && nextPriority <= currentPriority) return;
   }
 
   candidate = message;
-  closeQualityDialog();
+  if (!isSameMedia) closeQualityDialog();
   if (candidate.media.isDrmProtected || !candidate.policy.isAllowedByDomainPolicy) {
     hideButton();
     showNotice('This media cannot be downloaded because it is protected or restricted.');
     return;
   }
   showButton();
+
+  if (isHlsMedia(candidate.media)) promoteMasterPlaylistCandidate(candidate);
 }
 
 function mediaPriority(media) {
   const url = (media.url || '').toLowerCase();
   const mimeType = (media.mimeType || '').toLowerCase();
+  if (media.isHlsMaster) return 120;
   if (media.qualityOptions?.length) return 110;
   if (mimeType.includes('mpegurl') || url.includes('.m3u8')) return 100;
   if (mimeType === 'application/x-macvidcatch-youtube') return 90;
@@ -55,6 +58,13 @@ function isHlsMedia(media) {
   const url = (media.url || '').toLowerCase();
   const mimeType = (media.mimeType || '').toLowerCase();
   return mimeType.includes('mpegurl') || url.includes('.m3u8');
+}
+
+function rememberHlsCandidate(url) {
+  if (!url || !url.toLowerCase().includes('.m3u8')) return;
+  recentHlsCandidates.unshift(url);
+  const unique = [...new Set(recentHlsCandidates)];
+  recentHlsCandidates.splice(0, recentHlsCandidates.length, ...unique.slice(0, 30));
 }
 
 function detectYouTubePageCandidate() {
@@ -142,6 +152,7 @@ function currentYouTubeVideo() {
   if (!isYouTubePage()) return null;
 
   const hostname = window.location.hostname.replace(/^www\./, '');
+
   const url = new URL(window.location.href);
   const title = youtubePageTitle();
   if (hostname === 'youtu.be') return { url: url.href, title };
@@ -239,6 +250,7 @@ async function handleDownloadClick() {
   if (!candidate) return;
   if (!candidate.policy.isAllowedByDomainPolicy) return;
   if (shouldAskQuality(candidate.media)) {
+    await promoteBestHlsCandidateForClick();
     const options = await qualityOptionsFor(candidate.media);
     showQualityDialog(options);
     return;
@@ -254,8 +266,11 @@ function shouldAskQuality(media) {
 
 async function qualityOptionsFor(media) {
   if (media.qualityOptions?.length) return [{ label: 'Best available', value: 'best' }, ...media.qualityOptions];
-  const parsed = await parseHlsQualities(media.url);
-  if (parsed.length > 0) return [{ label: 'Best available', value: 'best' }, ...parsed];
+  const analysis = await analyzeHlsPlaylist(media.url);
+  if (analysis.qualityOptions.length > 0) {
+    media.qualityOptions = analysis.qualityOptions;
+    return [{ label: 'Best available', value: 'best' }, ...analysis.qualityOptions];
+  }
   return [
     { label: 'Best available', value: 'best' },
     { label: '1080p or lower', value: '1080' },
@@ -265,19 +280,83 @@ async function qualityOptionsFor(media) {
   ];
 }
 
-async function parseHlsQualities(url) {
-  if (!url || !url.toLowerCase().includes('.m3u8')) return [];
+async function analyzeHlsPlaylist(url) {
+  if (!url || !url.toLowerCase().includes('.m3u8')) return { isMaster: false, qualityOptions: [] };
+  if (hlsAnalysisCache.has(url)) return hlsAnalysisCache.get(url);
+
+  const analysisPromise = browser.runtime.sendMessage({ type: 'MACVIDCATCH_ANALYZE_HLS', url })
+    .then(result => result || { isMaster: false, qualityOptions: [] })
+    .catch(() => ({ isMaster: false, qualityOptions: [] }));
+
+  hlsAnalysisCache.set(url, analysisPromise);
+  return analysisPromise;
+}
+
+async function promoteMasterPlaylistCandidate(message) {
+  const originalUrl = message.media?.url;
+  const analysis = await analyzeHlsPlaylist(originalUrl);
+  if (candidate?.media?.url !== originalUrl || !analysis.isMaster) return;
+  candidate.media.qualityOptions = analysis.qualityOptions;
+}
+
+async function promoteBestHlsCandidateForClick() {
+  if (!candidate || !isHlsMedia(candidate.media)) return;
+
+  const best = await bestRecentMasterPlaylist(candidate.media.url);
+  if (!best || best.url === candidate.media.url) return;
+
+  candidate = {
+    ...candidate,
+    media: {
+      ...candidate.media,
+      url: best.url,
+      qualityOptions: best.qualityOptions
+    }
+  };
+}
+
+async function bestRecentMasterPlaylist(currentUrl) {
+  const urls = recentHlsUrls(currentUrl).slice(0, 12);
+  const analyses = await Promise.all(urls.map(async url => ({ url, ...(await analyzeHlsPlaylist(url)) })));
+  const masters = analyses.filter(item => item.isMaster);
+  if (!masters.length) return null;
+  masters.sort((a, b) => masterPlaylistScore(b) - masterPlaylistScore(a));
+  return masters[0];
+}
+
+function masterPlaylistScore(item) {
+  const path = safeUrlPath(item.url);
+  let score = item.qualityOptions.length * 10;
+  if (/master|playlist|index/i.test(path)) score += 50;
+  if (/chunk|segment|frag|audio|subtitle/i.test(path)) score -= 50;
+  return score;
+}
+
+function safeUrlPath(url) {
   try {
-    const response = await fetch(url, { credentials: 'include' });
-    const text = await response.text();
-    const heights = [...text.matchAll(/RESOLUTION=\d+x(\d+)/gi)]
-      .map(match => Number(match[1]))
-      .filter(height => Number.isFinite(height) && height > 0);
-    return [...new Set(heights)]
-      .sort((a, b) => b - a)
-      .map(height => ({ label: `${height}p`, value: String(height) }));
+    return new URL(url).pathname;
   } catch (_) {
-    return [];
+    return url || '';
+  }
+}
+
+function recentHlsUrls(currentUrl) {
+  try {
+    const current = new URL(currentUrl);
+    const seen = new Set([current.href]);
+    for (const candidateUrl of recentHlsCandidates) {
+      const url = new URL(candidateUrl);
+      if (url.origin === current.origin) seen.add(url.href);
+    }
+    for (const entry of performance.getEntriesByType('resource').slice().reverse()) {
+      if (!entry.name || !entry.name.toLowerCase().includes('.m3u8')) continue;
+      const url = new URL(entry.name);
+      if (url.origin !== current.origin) continue;
+      seen.add(url.href);
+    }
+    return [...seen];
+  } catch (_) {
+    return currentUrl ? [currentUrl] : [];
   }
 }
 

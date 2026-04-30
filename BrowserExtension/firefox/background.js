@@ -1,6 +1,12 @@
 const mediaExtensions = ['.mp4', '.mov', '.webm', '.m4v', '.m3u8'];
 const mediaTypes = ['video/mp4', 'video/quicktime', 'video/webm', 'application/vnd.apple.mpegurl', 'application/x-mpegurl'];
 const drmHeaders = ['x-drm', 'x-widevine', 'x-playready', 'x-fairplay'];
+const hlsAnalysisCache = new Map();
+
+browser.runtime.onMessage.addListener(message => {
+  if (message?.type !== 'MACVIDCATCH_ANALYZE_HLS') return undefined;
+  return analyzeHlsPlaylist(message.url);
+});
 
 browser.webRequest.onHeadersReceived.addListener((details) => {
   const url = new URL(details.url);
@@ -13,15 +19,52 @@ browser.webRequest.onHeadersReceived.addListener((details) => {
   browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false }).then(config => {
     const blocked = config.blocklist.some(domain => domain && url.hostname.includes(domain));
     const allowed = !config.allowlistMode || config.allowlist.some(domain => domain && url.hostname.includes(domain));
-    return browser.tabs.sendMessage(details.tabId, {
-      type: 'MDMPRO_MEDIA_CANDIDATE',
-      media: { url: details.url, mimeType: contentType, title: documentTitleFromUrl(url), quality: '', isDrmProtected: isDrm },
-      policy: { isAllowedByUser: true, isAllowedByDomainPolicy: allowed && !blocked }
-    });
+    return sendMediaCandidate(details.tabId, url, contentType, isDrm, allowed && !blocked);
   }).catch(() => {});
 }, { urls: ['http://*/*', 'https://*/*'], types: ['media', 'xmlhttprequest', 'other'] }, ['responseHeaders']);
+
+async function sendMediaCandidate(tabId, url, contentType, isDrm, isAllowedByDomainPolicy) {
+  const hlsAnalysis = url.href.toLowerCase().includes('.m3u8') || contentType.includes('mpegurl')
+    ? await analyzeHlsPlaylist(url.href)
+    : { isMaster: false, qualityOptions: [] };
+
+  return browser.tabs.sendMessage(tabId, {
+    type: 'MDMPRO_MEDIA_CANDIDATE',
+    media: {
+      url: url.href,
+      mimeType: contentType,
+      title: documentTitleFromUrl(url),
+      quality: '',
+      isDrmProtected: isDrm,
+      isHlsMaster: hlsAnalysis.isMaster,
+      qualityOptions: hlsAnalysis.qualityOptions
+    },
+    policy: { isAllowedByUser: true, isAllowedByDomainPolicy }
+  });
+}
 
 function documentTitleFromUrl(url) {
   const last = url.pathname.split('/').filter(Boolean).pop();
   return last ? decodeURIComponent(last) : url.hostname;
+}
+
+async function analyzeHlsPlaylist(url) {
+  if (!url || !url.toLowerCase().includes('.m3u8')) return { isMaster: false, qualityOptions: [] };
+  if (hlsAnalysisCache.has(url)) return hlsAnalysisCache.get(url);
+
+  const analysisPromise = fetch(url, { credentials: 'include' })
+    .then(response => response.text())
+    .then(text => {
+      const heights = [...text.matchAll(/RESOLUTION=\d+x(\d+)/gi)]
+        .map(match => Number(match[1]))
+        .filter(height => Number.isFinite(height) && height > 0);
+      const qualityOptions = [...new Set(heights)]
+        .sort((a, b) => b - a)
+        .map(height => ({ label: `${height}p`, value: String(height) }));
+      return { isMaster: /#EXT-X-STREAM-INF/i.test(text), qualityOptions };
+    })
+    .catch(() => ({ isMaster: false, qualityOptions: [] }));
+
+  hlsAnalysisCache.set(url, analysisPromise);
+  return analysisPromise;
 }
