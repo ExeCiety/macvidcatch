@@ -1,33 +1,67 @@
 # MacVidCatch
 
-MacVidCatch is a native macOS 13+ Internet Download Manager with browser integration. The user-facing app, `.app` bundle, DMG volume, Swift package, and executable target use the name `MacVidCatch`.
+MacVidCatch is a native macOS 13+ Internet Download Manager with browser integration. The user-facing app name, `.app` bundle, DMG volume, Swift package, and executable target all use `MacVidCatch`.
 
-## Current Features
+## Current Status
 
-- SwiftUI desktop app with a downloads list, status filters, manual URL dialog, settings view, and menu bar controls.
-- Native HTTP/HTTPS downloader with metadata probing, queue management, pause/resume, retry, file-size validation, partial-file cleanup, and segmented downloads when the server supports `Accept-Ranges: bytes`.
-- Basic global speed limiting, notifications, and local persistence under Application Support.
-- Custom URL scheme integration via `macvidcatch://download?...`, including browser, MIME type, page URL, title, and preferred quality parameters.
-- Browser-originated video, HLS, and YouTube page downloads routed through `yt-dlp`.
-- Chrome Manifest V3 and Firefox WebExtensions implementations with direct media detection, YouTube page detection, legal-first DRM checks, HLS quality selection, and a floating download button.
-- Local scripts for building the `.app` bundle and DMG installer.
-- Diagnostic logs for app-level events and per-download `yt-dlp` output.
+- SwiftUI macOS app with a downloads list, status filters, manual download dialog, Settings, menu bar controls, and a button to open the logs folder.
+- Native HTTP/HTTPS downloader with metadata probing via `HEAD`, HTTP status validation, retry, partial-file pause/resume, partial cleanup, final file-size validation, and segmented downloads when the server supports `Accept-Ranges: bytes`.
+- Download queue with global parallel download limits and per-file connection limits.
+- Basic global speed limiting for the native single-download path.
+- Local persistence for jobs and settings under Application Support.
+- Custom URL scheme integration via `macvidcatch://download?...` for URLs sent by browser extensions.
+- Browser-extension downloads, HLS `.m3u8`, and YouTube URLs are routed through `yt-dlp`; normal manual direct HTTP downloads continue to use the native downloader unless the URL or MIME type indicates HLS.
+- Chrome Manifest V3 and Firefox WebExtensions connectors for detecting direct media, HLS playlists, YouTube pages, quality selection, and opening the app via the URL scheme.
+- Diagnostic logging for app/download lifecycle, external tool commands, exit status, and per-job `yt-dlp`/`ffmpeg` output.
+- Local scripts for building the `.app` bundle and creating a DMG.
 
 ## Requirements
 
 - macOS 13 or later.
-- Swift Package Manager / Xcode command line tools with Swift 6 support.
-- Optional runtime tools for browser video and HLS downloads:
+- Xcode Command Line Tools / Swift Package Manager with Swift 6 support.
+- Optional runtime dependencies for browser video and HLS downloads:
 
 ```bash
 brew install yt-dlp aria2 ffmpeg
 ```
 
-MacVidCatch looks for `yt-dlp`, `aria2c`, and `ffmpeg` in common Homebrew and system locations such as `/opt/homebrew/bin` and `/usr/local/bin`. `aria2c` is used by `yt-dlp` for parallel external downloads when possible. HLS-to-MP4 output may require `ffmpeg` for the final remux step.
+MacVidCatch searches for `yt-dlp`, `aria2c`, and `ffmpeg` in common paths such as `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/opt/homebrew/opt/node/bin`, and `/usr/local/opt/node/bin`. `aria2c` is used by `yt-dlp` as the external downloader on the main path. `ffmpeg` is used to remux HLS MPEG-TS output to MP4 when needed.
+
+## Project Structure
+
+```text
+app/
+├── Package.swift
+├── README.md
+├── BrowserExtension/
+│   ├── chrome/
+│   └── firefox/
+├── Sources/MacVidCatch/
+│   ├── AppLogger.swift
+│   ├── DownloadEngine.swift
+│   ├── MacVidCatch.swift
+│   ├── Models.swift
+│   ├── Store.swift
+│   └── Views.swift
+└── scripts/
+    ├── build_app.sh
+    └── create_dmg.sh
+```
+
+Important files:
+
+- `Sources/MacVidCatch/MacVidCatch.swift` — SwiftUI app entry point, menu bar extra, and custom URL scheme handler.
+- `Sources/MacVidCatch/DownloadEngine.swift` — queue, native downloader, `yt-dlp` integration, `ffmpeg` integration, progress parsing, retry, pause/cancel/delete.
+- `Sources/MacVidCatch/Models.swift` — persisted models for jobs, settings, and extension payloads.
+- `Sources/MacVidCatch/Store.swift` — app state and JSON persistence.
+- `Sources/MacVidCatch/Views.swift` — main UI, settings, download dialog, downloads table, and action buttons.
+- `Sources/MacVidCatch/AppLogger.swift` — log locations and logging helpers.
+- `BrowserExtension/chrome/` — Chrome Manifest V3 connector.
+- `BrowserExtension/firefox/` — temporary Firefox Manifest V2 connector.
 
 ## Build And Run
 
-Run commands from this `app/` directory.
+Run commands from the `app/` directory:
 
 ```bash
 swift build -c release
@@ -35,16 +69,24 @@ swift build -c release
 open ".build/release/MacVidCatch.app"
 ```
 
-`./scripts/build_app.sh` builds the Swift package, creates `.build/release/MacVidCatch.app`, copies the `MacVidCatch` executable into the bundle, and writes the bundle `Info.plist` including the `macvidcatch` URL scheme.
+`./scripts/build_app.sh` runs a release build, retries after clearing Swift `ModuleCache` if the first build fails, creates `.build/release/MacVidCatch.app`, copies the `MacVidCatch` executable, and writes `Info.plist` including the `macvidcatch` URL scheme.
 
 ## Create A DMG
+
+Run commands from the `app/` directory:
 
 ```bash
 ./scripts/build_app.sh
 ./scripts/create_dmg.sh
 ```
 
-The DMG is written to `.build/release/MacVidCatch.dmg` with the volume name `MacVidCatch`.
+Default output:
+
+```text
+.build/release/MacVidCatch.dmg
+```
+
+The DMG volume name is `MacVidCatch`. The script also creates an `Applications` symlink in the staging folder.
 
 Signing and notarization require an Apple Developer ID:
 
@@ -54,53 +96,97 @@ xcrun notarytool submit ".build/release/MacVidCatch.dmg" --keychain-profile YOUR
 xcrun stapler staple ".build/release/MacVidCatch.dmg"
 ```
 
+## How Downloads Work
+
+### Native HTTP/HTTPS
+
+The native path is used for normal manual downloads.
+
+- The app sends a `HEAD` request to resolve the file name, file size, final URL, and resume support.
+- If the file supports range requests, is larger than 1 MiB, and `maxConnectionsPerFile > 1`, the app uses segmented download.
+- Otherwise, the app uses a single stream download with a partial file.
+- Partial files are stored under the temporary directory `VidcatchMac/<job-id>/` and cleaned up on cancel/delete/retry.
+- The final file is validated against `Content-Length` when the size is known.
+
+### Browser Video / HLS / YouTube
+
+The `yt-dlp` path is used for downloads from browser extensions, `.m3u8` URLs, HLS MIME types, and YouTube URLs.
+
+- The app shows a native save dialog when it receives a browser deep link.
+- The app runs `yt-dlp` with the originating page referer when available.
+- The app applies a browser-specific user agent based on the source browser (`chrome` or `firefox`).
+- The app attempts to use cookies from the configured browser profile.
+- The app uses `aria2c` as the external downloader on the main path.
+- For HLS, the app uses MPEG-TS handling and then remuxes to MP4 with `ffmpeg` if the output is detected as MPEG-TS.
+- `yt-dlp` `[download]` output is parsed to update progress, total size, and speed in the UI.
+- For known YouTube failure modes, the app retries with alternate extractor/client settings or without the external downloader and with more conservative formats.
+
+Quality selected in the extension is passed to `yt-dlp` as a format selector. For example, `720` means the best format with height `<=720`; `best` leaves format selection to `yt-dlp`.
+
 ## Browser Integration
 
-The app registers the custom URL scheme:
+The app registers this URL scheme in the bundle `Info.plist`:
 
 ```text
 macvidcatch://download?url=...
 ```
 
-The browser extensions send the media URL plus page URL, title, MIME type, selected quality, and source browser to the app. Browser-originated downloads and `.m3u8` / HLS media use the `yt-dlp` path, while native direct HTTP downloads continue to use the built-in downloader.
-
-Supported query parameters used by the app are:
+Query parameters used by the app:
 
 - `url` — required media or page URL to download.
-- `pageUrl` — optional originating page URL, used as the `yt-dlp` referer when appropriate.
+- `pageUrl` — optional originating page URL for the `yt-dlp` referer.
 - `title` — optional suggested display/output name.
 - `mimeType` — optional media type used to choose the native or `yt-dlp` path.
-- `browser` — optional source browser hint; currently `chrome` or `firefox`.
-- `quality` — optional preferred quality; `best` or a height such as `1080`, `720`, `480`, or `360`.
+- `browser` — optional source browser hint such as `chrome` or `firefox`.
+- `quality` — optional preferred quality, either `best` or a height such as `1080`, `720`, `480`, or `360`.
 
-To load the Chrome extension:
+### Chrome Extension
 
 1. Open `chrome://extensions`.
-2. Enable Developer Mode.
+2. Enable **Developer Mode**.
 3. Choose **Load unpacked**.
 4. Select `BrowserExtension/chrome`.
-5. When direct media, HLS, or a supported YouTube page is detected, use the floating button to open the app through the URL scheme.
+5. When direct media, HLS, or a YouTube page is detected, use the MacVidCatch floating button.
 
-To load the Firefox extension temporarily:
+### Firefox Extension
 
 1. Open `about:debugging#/runtime/this-firefox`.
 2. Choose **Load Temporary Add-on…**.
 3. Select `BrowserExtension/firefox/manifest.json`.
-4. When direct media, HLS, or a supported YouTube page is detected, use the floating button to open the app through the URL scheme.
+4. When direct media, HLS, or a YouTube page is detected, use the MacVidCatch floating button.
 
-## Browser Video Downloads
+## Settings
 
-For video, HLS, and YouTube candidates sent by a browser extension, MacVidCatch first shows a native save dialog, then runs `yt-dlp` with the originating page referer, a matching browser user agent, browser cookies when available, and `aria2c` as the parallel downloader except for some fallback paths. HLS playlists are downloaded with MPEG-TS handling and remuxed to MP4 through `ffmpeg` after download when needed.
+Settings are automatically saved to JSON under Application Support.
 
-The extension asks for a quality when it sees HLS playlists or supported YouTube pages. The app passes that choice to `yt-dlp` as a height-constrained format selector, for example `720` means best video/audio at 720p or lower. Choosing `best` leaves format selection to `yt-dlp`.
+Available app settings:
 
-Make sure you are already signed in with the same browser profile when downloading media that requires authorized access. The app defaults to a detected cookies/profile path from common Firefox, Firefox Developer Edition, LibreWolf, Waterfox, Chrome, Chromium, Edge, or Brave locations. If automatic detection is wrong, set **Settings → Browser Integration → Browser cookies/profile path** to a browser `Profiles` folder, a specific profile folder, `cookies.sqlite`, or a Chromium-style profile folder containing `Cookies`. MacVidCatch does not bypass DRM, paywalls, encryption, or access controls.
+- Default download folder.
+- Max simultaneous downloads.
+- Max connections per file.
+- Retry count and retry interval.
+- Global speed limit in bytes/second; `0` means unlimited.
+- Notifications toggle.
+- Floating button preference toggle.
+- Browser cookies/profile path.
+- Domain allowlist and blocklist.
 
-For YouTube, the extension detects regular watch pages, Shorts, and `youtu.be` links. If `yt-dlp` hits known YouTube challenge or 403 failures, the app retries with conservative fallback extractor/client and format options and logs a dependency update hint.
+`Browser cookies/profile path` accepts a `Profiles` folder, a specific profile folder, a `cookies.sqlite` file, or a Chromium-style profile folder containing `Cookies`. Default detection checks common Firefox, Firefox Developer Edition, LibreWolf, Waterfox, Chrome, Chromium, Edge, and Brave locations.
+
+Note: extension allowlist/blocklist settings are applied before a candidate is sent to the app. On the app side, the currently enforced policy during enqueue is the domain blocklist.
 
 ## Logging And Data
 
-MacVidCatch keeps persisted app data under the existing `VidcatchMac` Application Support folder for compatibility with older builds.
+MacVidCatch continues to use the legacy `VidcatchMac` Application Support folder for data compatibility across versions:
+
+```text
+~/Library/Application Support/VidcatchMac/
+```
+
+Data files:
+
+- `downloads.json` — download job list.
+- `settings.json` — app settings.
 
 Logs are written to:
 
@@ -108,12 +194,14 @@ Logs are written to:
 ~/Library/Application Support/VidcatchMac/Logs/
 ```
 
-- `app.log` contains global app and download lifecycle events.
-- `download-<UUID>.log` contains per-download details and captured `yt-dlp` output.
+Log files:
 
-Use the app's **Logs** button to open the logs directory when diagnosing failed downloads.
+- `app.log` — global app and download lifecycle events.
+- `download-<UUID>.log` — per-job output from `yt-dlp`/`ffmpeg` and related command details.
 
-Persisted job and settings JSON are stored in the same `VidcatchMac` Application Support folder for compatibility with earlier builds.
+Use the **Logs** button in the UI to open the logs folder.
+
+Command logs redact common sensitive URL query parameters such as `token`, `signature`, `sig`, `policy`, `key`, and `jwt`. Upstream output from `yt-dlp`/`ffmpeg` is still stored for diagnostics, so review logs before sharing them.
 
 ## Validation
 
@@ -123,7 +211,7 @@ There is currently no dedicated test suite. Validate code changes with:
 swift build -c release
 ```
 
-When bundle behavior, URL scheme handling, or packaging changes, also run:
+If changes affect the app bundle, URL scheme, or packaging, also run:
 
 ```bash
 ./scripts/build_app.sh
@@ -131,15 +219,15 @@ When bundle behavior, URL scheme handling, or packaging changes, also run:
 
 ## Compliance And Safety
 
-MacVidCatch is intended only for downloads the user is authorized to access. The app and extension do not implement DRM, paywall, encryption, or access-control bypasses, and should not be extended with functionality intended to evade protections such as Widevine, FairPlay, PlayReady, token theft, or paywall circumvention.
+MacVidCatch is intended only for downloads the user is authorized to access and save. The app and extensions do not implement DRM, paywall, encryption, or access-control bypasses.
 
-Current safety behavior in this app:
+Current safety behavior:
 
-- The browser extensions surface direct media candidates for common video URLs and HLS playlists such as `.mp4`, `.mov`, `.webm`, `.m4v`, and `.m3u8`, plus supported YouTube page URLs for `yt-dlp` handling.
-- The extensions perform best-effort DRM detection from response headers, including known DRM header names and `keyformat`, `widevine`, `playready`, or `fairplay` markers. If a candidate appears protected, the floating button is not shown and the user sees an explanatory notice.
-- The extensions honor their local domain blocklist and allowlist-mode settings before sending a candidate to the app. The app also applies its persisted domain blocklist when enqueuing jobs.
-- Browser-originated media and HLS jobs are delegated to `yt-dlp`; native manual HTTP/HTTPS downloads continue to use the built-in downloader unless the URL or MIME type indicates HLS.
-- `yt-dlp` is invoked with the originating page referer, browser-specific user agent, browser cookies when available, `aria2c`, optional quality constraints, and HLS-friendly output handling. This is for content the user is already authorized to access in their local browser profile, not for bypassing restrictions.
-- App command logs redact common sensitive URL query parameters such as `token`, `signature`, `sig`, `policy`, `key`, and `jwt`; however, per-download `yt-dlp` output is captured for diagnostics and may include upstream tool output. Avoid sharing logs publicly without reviewing them first.
+- Extensions detect common direct media such as `.mp4`, `.mov`, `.webm`, `.m4v`, HLS `.m3u8`, and supported YouTube pages for `yt-dlp` handling.
+- Extensions perform best-effort DRM detection from response headers and markers such as `keyformat`, `widevine`, `playready`, and `fairplay`.
+- If media appears protected, the floating button is not shown and the user receives an explanatory notice.
+- Extensions honor local blocklist and allowlist-mode settings before sending candidates to the app.
+- The app honors the persisted domain blocklist when enqueuing jobs.
+- Cookies/referer are used only for content the user is authorized to access through their local browser profile.
 
-The DRM and policy checks are intentionally conservative, best-effort safeguards, not a guarantee that every protected or restricted stream can be identified. Users remain responsible for following the source site's terms and only downloading content they are allowed to save.
+DRM and policy safeguards are conservative and best-effort; they are not a guarantee that every protected stream can be identified. Users are responsible for following source-site terms and downloading only content they are allowed to save.
