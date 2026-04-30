@@ -2,8 +2,7 @@ import Foundation
 
 enum AppLogger {
     static var logsDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let url = base.appendingPathComponent("VidcatchMac", isDirectory: true).appendingPathComponent("Logs", isDirectory: true)
+        let url = AppSupport.directory.appendingPathComponent("Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

@@ -27,38 +27,6 @@ brew install yt-dlp aria2 ffmpeg
 
 MacVidCatch searches for `yt-dlp`, `aria2c`, and `ffmpeg` in common paths such as `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/opt/homebrew/opt/node/bin`, and `/usr/local/opt/node/bin`. `aria2c` is used by `yt-dlp` as the external downloader on the main path. `ffmpeg` is used to remux HLS MPEG-TS output to MP4 when needed.
 
-## Project Structure
-
-```text
-app/
-├── Package.swift
-├── README.md
-├── BrowserExtension/
-│   ├── chrome/
-│   └── firefox/
-├── Sources/MacVidCatch/
-│   ├── AppLogger.swift
-│   ├── DownloadEngine.swift
-│   ├── MacVidCatch.swift
-│   ├── Models.swift
-│   ├── Store.swift
-│   └── Views.swift
-└── scripts/
-    ├── build_app.sh
-    └── create_dmg.sh
-```
-
-Important files:
-
-- `Sources/MacVidCatch/MacVidCatch.swift` — SwiftUI app entry point, menu bar extra, and custom URL scheme handler.
-- `Sources/MacVidCatch/DownloadEngine.swift` — queue, native downloader, `yt-dlp` integration, `ffmpeg` integration, progress parsing, retry, pause/cancel/delete.
-- `Sources/MacVidCatch/Models.swift` — persisted models for jobs, settings, and extension payloads.
-- `Sources/MacVidCatch/Store.swift` — app state and JSON persistence.
-- `Sources/MacVidCatch/Views.swift` — main UI, settings, download dialog, downloads table, and action buttons.
-- `Sources/MacVidCatch/AppLogger.swift` — log locations and logging helpers.
-- `BrowserExtension/chrome/` — Chrome Manifest V3 connector.
-- `BrowserExtension/firefox/` — temporary Firefox Manifest V2 connector.
-
 ## Build And Run
 
 Run commands from the `app/` directory:
@@ -105,7 +73,7 @@ The native path is used for normal manual downloads.
 - The app sends a `HEAD` request to resolve the file name, file size, final URL, and resume support.
 - If the file supports range requests, is larger than 1 MiB, and `maxConnectionsPerFile > 1`, the app uses segmented download.
 - Otherwise, the app uses a single stream download with a partial file.
-- Partial files are stored under the temporary directory `VidcatchMac/<job-id>/` and cleaned up on cancel/delete/retry.
+- Partial files are stored under the temporary directory `MacVidCatch/<job-id>/` and cleaned up on cancel/delete/retry.
 - The final file is validated against `Content-Length` when the size is known.
 
 ### Browser Video / HLS / YouTube
@@ -177,10 +145,10 @@ Note: extension allowlist/blocklist settings are applied before a candidate is s
 
 ## Logging And Data
 
-MacVidCatch continues to use the legacy `VidcatchMac` Application Support folder for data compatibility across versions:
+MacVidCatch stores app data under its Application Support folder:
 
 ```text
-~/Library/Application Support/VidcatchMac/
+~/Library/Application Support/MacVidCatch/
 ```
 
 Data files:
@@ -191,7 +159,7 @@ Data files:
 Logs are written to:
 
 ```text
-~/Library/Application Support/VidcatchMac/Logs/
+~/Library/Application Support/MacVidCatch/Logs/
 ```
 
 Log files:

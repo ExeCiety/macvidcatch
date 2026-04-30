@@ -31,12 +31,7 @@ final class AppStore: ObservableObject {
 }
 
 enum Persistence {
-    private static var supportURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let url = base.appendingPathComponent("VidcatchMac", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
+    private static var supportURL: URL { AppSupport.directory }
     private static var jobsURL: URL { supportURL.appendingPathComponent("downloads.json") }
     private static var settingsURL: URL { supportURL.appendingPathComponent("settings.json") }
 

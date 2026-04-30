@@ -696,7 +696,7 @@ private func validateHTTP(_ response: URLResponse) throws {
 }
 
 private func partialURL(for id: UUID, suffix: String) -> URL {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("VidcatchMac", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MacVidCatch", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir.appendingPathComponent(suffix + ".part")
 }
@@ -730,7 +730,7 @@ private func uniqueFileURL(_ url: URL) -> URL {
 }
 
 private func cleanupPartials(for id: UUID) {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("VidcatchMac", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MacVidCatch", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
     try? FileManager.default.removeItem(at: dir)
 }
 
