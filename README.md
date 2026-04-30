@@ -9,7 +9,7 @@ MacVidCatch is a native macOS 13+ Internet Download Manager with browser integra
 - Basic global speed limiting, notifications, and local persistence under Application Support.
 - Custom URL scheme integration via `macvidcatch://download?...`, including browser, MIME type, page URL, title, and preferred quality parameters.
 - Browser-originated video, HLS, and YouTube page downloads routed through `yt-dlp`.
-- Chrome Manifest V3 and Firefox WebExtensions prototypes with direct media detection, YouTube page detection, legal-first DRM checks, HLS quality selection, and a floating download button.
+- Chrome Manifest V3 and Firefox WebExtensions implementations with direct media detection, YouTube page detection, legal-first DRM checks, HLS quality selection, and a floating download button.
 - Local scripts for building the `.app` bundle and DMG installer.
 - Diagnostic logs for app-level events and per-download `yt-dlp` output.
 
@@ -73,7 +73,7 @@ Supported query parameters used by the app are:
 - `browser` — optional source browser hint; currently `chrome` or `firefox`.
 - `quality` — optional preferred quality; `best` or a height such as `1080`, `720`, `480`, or `360`.
 
-To load the Chrome extension prototype:
+To load the Chrome extension:
 
 1. Open `chrome://extensions`.
 2. Enable Developer Mode.
@@ -81,7 +81,7 @@ To load the Chrome extension prototype:
 4. Select `BrowserExtension/chrome`.
 5. When direct media, HLS, or a supported YouTube page is detected, use the floating button to open the app through the URL scheme.
 
-To load the Firefox extension prototype temporarily:
+To load the Firefox extension temporarily:
 
 1. Open `about:debugging#/runtime/this-firefox`.
 2. Choose **Load Temporary Add-on…**.
@@ -113,7 +113,7 @@ Logs are written to:
 
 Use the app's **Logs** button to open the logs directory when diagnosing failed downloads.
 
-Persisted job and settings JSON are stored in the same `VidcatchMac` Application Support folder for compatibility with earlier prototype builds.
+Persisted job and settings JSON are stored in the same `VidcatchMac` Application Support folder for compatibility with earlier builds.
 
 ## Validation
 
@@ -133,7 +133,7 @@ When bundle behavior, URL scheme handling, or packaging changes, also run:
 
 MacVidCatch is intended only for downloads the user is authorized to access. The app and extension do not implement DRM, paywall, encryption, or access-control bypasses, and should not be extended with functionality intended to evade protections such as Widevine, FairPlay, PlayReady, token theft, or paywall circumvention.
 
-Current safety behavior in this prototype:
+Current safety behavior in this app:
 
 - The browser extensions surface direct media candidates for common video URLs and HLS playlists such as `.mp4`, `.mov`, `.webm`, `.m4v`, and `.m3u8`, plus supported YouTube page URLs for `yt-dlp` handling.
 - The extensions perform best-effort DRM detection from response headers, including known DRM header names and `keyformat`, `widevine`, `playready`, or `fairplay` markers. If a candidate appears protected, the floating button is not shown and the user sees an explanatory notice.
