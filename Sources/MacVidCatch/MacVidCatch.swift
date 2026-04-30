@@ -43,7 +43,7 @@ final class DeepLinkRouter: ObservableObject {
     private func chooseBrowserDownloadDestination(defaultName: String) -> URL? {
         let panel = NSSavePanel()
         panel.title = "Save Video"
-        panel.message = "Pilih nama file dan lokasi penyimpanan."
+        panel.message = "Choose the file name and save location."
         panel.nameFieldStringValue = defaultName
         panel.canCreateDirectories = true
         return panel.runModal() == .OK ? panel.url : nil

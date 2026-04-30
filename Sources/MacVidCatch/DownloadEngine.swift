@@ -129,7 +129,7 @@ final class DownloadEngine: NSObject, ObservableObject {
                 guard !Task.isCancelled else { return }
                 AppLogger.log("Completed job id=\(jobID.uuidString)", jobID: jobID)
                 store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0; $0.externalProgress = 1 }
-                notify(title: "Download selesai", body: latest.fileName)
+                notify(title: "Download complete", body: latest.fileName)
                 return
             } catch {
                 if pausedIDs.contains(jobID) || Task.isCancelled { return }
@@ -137,7 +137,7 @@ final class DownloadEngine: NSObject, ObservableObject {
                 AppLogger.log("Attempt \(attempts) failed for job id=\(jobID.uuidString): \(error.localizedDescription)", jobID: jobID)
                 if attempts > store.settings.retryCount {
                     store.update(jobID) { $0.status = .failed; $0.errorCode = error.localizedDescription; $0.speedBytesPerSecond = 0 }
-                    notify(title: "Download gagal", body: error.localizedDescription)
+                    notify(title: "Download failed", body: error.localizedDescription)
                 } else {
                     try? await Task.sleep(nanoseconds: UInt64(store.settings.retryIntervalSeconds * Double(attempts) * 1_000_000_000))
                 }
@@ -226,7 +226,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         var request = URLRequest(url: url); request.httpMethod = "HEAD"; request.timeoutInterval = 20
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        guard (200..<400).contains(http.statusCode) else { throw NSError(domain: "Download", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: http.statusCode == 403 || http.statusCode == 401 ? "Permission denied atau URL expired." : "Server mengembalikan HTTP \(http.statusCode)."] ) }
+        guard (200..<400).contains(http.statusCode) else { throw NSError(domain: "Download", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: http.statusCode == 403 || http.statusCode == 401 ? "Permission denied or URL expired." : "Server returned HTTP \(http.statusCode)."] ) }
         let disposition = http.value(forHTTPHeaderField: "Content-Disposition") ?? ""
         let name = filename(from: disposition) ?? http.url?.lastPathComponent.nilIfEmpty ?? url.lastPathComponent.nilIfEmpty ?? "download"
         let size = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "") ?? 0
@@ -244,7 +244,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     private func ytDlpDownload(job: DownloadJob) async throws {
         guard let executable = findExecutable("yt-dlp") else {
             AppLogger.log("yt-dlp executable not found", jobID: job.id)
-            throw NSError(domain: "Download", code: 2, userInfo: [NSLocalizedDescriptionKey: "yt-dlp belum terinstall. Install dengan: brew install yt-dlp aria2"])
+            throw NSError(domain: "Download", code: 2, userInfo: [NSLocalizedDescriptionKey: "yt-dlp is not installed. Install it with: brew install yt-dlp aria2"])
         }
 
         let outputTemplate = ytDlpOutputTemplate(for: job)
@@ -387,7 +387,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         guard isHLSPlaylist(job.sourceUrl), file.pathExtension.lowercased() == "ts" || isMpegTSFile(file) else { return file }
         guard let executable = findExecutable("ffmpeg") else {
             AppLogger.log("ffmpeg executable not found for HLS TS to MP4 conversion", jobID: job.id)
-            throw NSError(domain: "Download", code: 3, userInfo: [NSLocalizedDescriptionKey: "ffmpeg belum terinstall. Install dengan: brew install ffmpeg"])
+            throw NSError(domain: "Download", code: 3, userInfo: [NSLocalizedDescriptionKey: "ffmpeg is not installed. Install it with: brew install ffmpeg"])
         }
 
         let replacingBrokenMP4 = file.pathExtension.lowercased() == "mp4"
@@ -395,7 +395,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         let arguments = ["-f", "mpegts", "-i", file.path, "-c", "copy", "-bsf:a", "aac_adtstoasc", output.path]
         let result = try await runExternalTool(executable: executable, arguments: arguments, jobID: job.id, toolName: "ffmpeg")
         guard result.status == 0 else {
-            let message = result.output.split(separator: "\n").filter { !String($0).trimmingCharacters(in: CharacterSet.whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "ffmpeg gagal mengkonversi TS ke MP4 dengan kode \(result.status)."
+            let message = result.output.split(separator: "\n").filter { !String($0).trimmingCharacters(in: CharacterSet.whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "ffmpeg failed to convert TS to MP4 with code \(result.status)."
             throw NSError(domain: "Download", code: Int(result.status), userInfo: [NSLocalizedDescriptionKey: message])
         }
         if replacingBrokenMP4 {
@@ -627,11 +627,11 @@ private func isYouTubeForbiddenFailure(_ output: String) -> Bool {
 }
 
 private func ytDlpErrorMessage(from output: String, status: Int32) -> String {
-    var message = output.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "yt-dlp gagal dengan kode \(status)."
+    var message = output.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "yt-dlp failed with code \(status)."
     if isYouTubeChallengeFailure(output) {
-        message += "\n\nCoba update dependency: brew upgrade yt-dlp node deno aria2, lalu reload halaman YouTube dan coba lagi."
+        message += "\n\nTry updating dependencies: brew upgrade yt-dlp node deno aria2, then reload the YouTube page and try again."
     } else if isYouTubeForbiddenFailure(output) {
-        message += "\n\nCoba reload video YouTube, pastikan bisa diputar di Chrome yang sama, lalu update yt-dlp: brew upgrade yt-dlp."
+        message += "\n\nTry reloading the YouTube video, make sure it plays in the same Chrome browser, then update yt-dlp: brew upgrade yt-dlp."
     }
     return message
 }
@@ -709,7 +709,7 @@ private func mergePartials(partials: [URL], destination: URL, expectedBytes: Int
     try output.close()
     if expectedBytes > 0 {
         let actual = (try FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? Int64) ?? 0
-        guard actual == expectedBytes else { throw NSError(domain: "Download", code: 1, userInfo: [NSLocalizedDescriptionKey: "Ukuran file akhir tidak sesuai."]) }
+        guard actual == expectedBytes else { throw NSError(domain: "Download", code: 1, userInfo: [NSLocalizedDescriptionKey: "Final file size does not match."]) }
     }
     try? FileManager.default.removeItem(at: destination)
     try FileManager.default.moveItem(at: tmp, to: destination)

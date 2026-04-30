@@ -35,7 +35,7 @@ async function setCandidate(message, options = {}) {
   closeQualityDialog();
   if (candidate.media.isDrmProtected || !candidate.policy.isAllowedByDomainPolicy) {
     hideButton();
-    showNotice('Media ini tidak dapat diunduh karena proteksi atau batasan izin.');
+    showNotice('This media cannot be downloaded because it is protected or restricted.');
     return;
   }
   showButton();
@@ -288,8 +288,8 @@ function showQualityDialog(options) {
   qualityDialog.id = 'macvidcatch-quality-dialog';
   qualityDialog.innerHTML = `
     <div class="macvidcatch-quality-card" role="dialog" aria-modal="true" aria-label="Choose video quality">
-      <div class="macvidcatch-quality-title">Pilih kualitas video</div>
-      <div class="macvidcatch-quality-subtitle">Pastikan video yang akan diunduh sudah benar.</div>
+      <div class="macvidcatch-quality-title">Choose video quality</div>
+      <div class="macvidcatch-quality-subtitle">Make sure this is the correct video before downloading.</div>
       <div class="macvidcatch-quality-media"></div>
       <div class="macvidcatch-quality-options"></div>
       <div class="macvidcatch-quality-actions"><button type="button" data-cancel="true">Cancel</button></div>
