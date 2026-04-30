@@ -2,16 +2,23 @@ let candidate = null;
 let button = null;
 let qualityDialog = null;
 let lastYouTubeUrl = '';
+let lastLocationHref = window.location.href;
+let youtubeDetectionTimer = null;
 
 chrome.runtime.onMessage.addListener(message => {
   if (message.type !== 'MDMPRO_MEDIA_CANDIDATE') return;
+  if (isYouTubePage() && message.media?.mimeType !== 'application/x-macvidcatch-youtube') {
+    scheduleYouTubeDetection();
+    return;
+  }
   setCandidate(message);
 });
 
 detectYouTubePageCandidate();
 setInterval(detectYouTubePageCandidate, 1000);
+installYouTubeSpaNavigationHooks();
 
-async function setCandidate(message) {
+async function setCandidate(message, options = {}) {
   if (isHlsMedia(message.media)) {
     const qualityOptions = await parseHlsQualities(message.media.url);
     if (qualityOptions.length > 0) message.media.qualityOptions = qualityOptions;
@@ -19,10 +26,13 @@ async function setCandidate(message) {
 
   const nextPriority = mediaPriority(message.media);
   const currentPriority = candidate ? mediaPriority(candidate.media) : -1;
-  if (candidate && nextPriority < currentPriority) return;
-  if (candidate && nextPriority === currentPriority && candidate.media.qualityOptions?.length) return;
+  if (!options.force) {
+    if (candidate && nextPriority < currentPriority) return;
+    if (candidate && nextPriority === currentPriority && candidate.media.qualityOptions?.length) return;
+  }
 
   candidate = message;
+  closeQualityDialog();
   if (candidate.media.isDrmProtected || !candidate.policy.isAllowedByDomainPolicy) {
     hideButton();
     showNotice('Media ini tidak dapat diunduh karena proteksi atau batasan izin.');
@@ -48,45 +58,166 @@ function isHlsMedia(media) {
 }
 
 function detectYouTubePageCandidate() {
-  const pageUrl = youtubeDownloadUrl();
-  if (!pageUrl || pageUrl === lastYouTubeUrl) return;
-  lastYouTubeUrl = pageUrl;
+  if (window.location.href !== lastLocationHref) {
+    lastLocationHref = window.location.href;
+    lastYouTubeUrl = '';
+    closeQualityDialog();
+  }
+
+  const video = currentYouTubeVideo();
+  if (!video || video.url === lastYouTubeUrl) return;
+  lastYouTubeUrl = video.url;
 
   chrome.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false }, config => {
-    const hostname = window.location.hostname;
-    const blocked = config.blocklist.some(domain => domain && hostname.includes(domain));
-    const allowed = !config.allowlistMode || config.allowlist.some(domain => domain && hostname.includes(domain));
-    setCandidate({
-      type: 'MDMPRO_MEDIA_CANDIDATE',
-      media: {
-        url: pageUrl,
-        mimeType: 'application/x-macvidcatch-youtube',
-        title: document.title.replace(/\s+-\s+YouTube$/, ''),
-        quality: '',
-        isDrmProtected: false
-      },
-      policy: { isAllowedByUser: true, isAllowedByDomainPolicy: allowed && !blocked }
-    });
+    if (currentYouTubeVideo()?.url !== video.url) return;
+    setCandidate(youtubeCandidateMessage(video, isAllowedByDomainPolicy(config)), { force: true });
   });
 }
 
-function youtubeDownloadUrl() {
+async function refreshYouTubeCandidateForClick() {
+  detectYouTubePageCandidate();
+  const video = currentYouTubeVideo();
+  if (!video || candidate?.media?.url === video.url) return;
+  lastYouTubeUrl = video.url;
+  const config = await chrome.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false });
+  candidate = youtubeCandidateMessage(video, isAllowedByDomainPolicy(config));
+  closeQualityDialog();
+  if (candidate.policy.isAllowedByDomainPolicy) showButton();
+  else hideButton();
+}
+
+function installYouTubeSpaNavigationHooks() {
+  window.addEventListener('yt-navigate-start', scheduleYouTubeDetection, true);
+  window.addEventListener('yt-navigate-finish', scheduleYouTubeDetection, true);
+  window.addEventListener('yt-page-data-updated', scheduleYouTubeDetection, true);
+  window.addEventListener('popstate', scheduleYouTubeDetection, true);
+
+  const originalPushState = history.pushState;
+  history.pushState = function pushState(...args) {
+    const result = originalPushState.apply(this, args);
+    scheduleYouTubeDetection();
+    return result;
+  };
+
+  const originalReplaceState = history.replaceState;
+  history.replaceState = function replaceState(...args) {
+    const result = originalReplaceState.apply(this, args);
+    scheduleYouTubeDetection();
+    return result;
+  };
+}
+
+function scheduleYouTubeDetection() {
+  if (youtubeDetectionTimer) clearTimeout(youtubeDetectionTimer);
+  lastYouTubeUrl = '';
+  closeQualityDialog();
+  youtubeDetectionTimer = setTimeout(() => {
+    youtubeDetectionTimer = null;
+    detectYouTubePageCandidate();
+  }, 250);
+}
+
+function isAllowedByDomainPolicy(config) {
+  const hostname = window.location.hostname;
+  const blocked = config.blocklist.some(domain => domain && hostname.includes(domain));
+  const allowed = !config.allowlistMode || config.allowlist.some(domain => domain && hostname.includes(domain));
+  return allowed && !blocked;
+}
+
+function youtubeCandidateMessage(video, isAllowedByDomainPolicy) {
+  return {
+    type: 'MDMPRO_MEDIA_CANDIDATE',
+    media: {
+      url: video.url,
+      mimeType: 'application/x-macvidcatch-youtube',
+      title: video.title,
+      quality: '',
+      isDrmProtected: false
+    },
+    policy: { isAllowedByUser: true, isAllowedByDomainPolicy }
+  };
+}
+
+function currentYouTubeVideo() {
+  if (!isYouTubePage()) return null;
+
   const hostname = window.location.hostname.replace(/^www\./, '');
-  if (hostname !== 'youtube.com' && hostname !== 'm.youtube.com' && hostname !== 'youtu.be') return '';
 
   const url = new URL(window.location.href);
-  if (hostname === 'youtu.be') return url.href;
+  const title = youtubePageTitle();
+  if (hostname === 'youtu.be') return { url: url.href, title };
 
   if (url.pathname === '/watch' && url.searchParams.get('v')) {
-    return `https://www.youtube.com/watch?v=${encodeURIComponent(url.searchParams.get('v'))}`;
+    const videoID = url.searchParams.get('v');
+    const canonicalUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoID)}`;
+    const playerVideo = currentYouTubePlayerVideo();
+    return {
+      url: canonicalUrl,
+      title: playerVideo?.url === canonicalUrl ? playerVideo.title : title
+    };
   }
 
   const shortsMatch = url.pathname.match(/^\/shorts\/([^/?#]+)/);
   if (shortsMatch) {
-    return `https://www.youtube.com/shorts/${encodeURIComponent(shortsMatch[1])}`;
+    return { url: `https://www.youtube.com/shorts/${encodeURIComponent(shortsMatch[1])}`, title };
   }
 
-  return '';
+  const playerVideo = currentYouTubePlayerVideo();
+  if (playerVideo) return playerVideo;
+
+  const selectedPlaylistVideo = currentYouTubeSelectedPlaylistVideo();
+  if (selectedPlaylistVideo) return selectedPlaylistVideo;
+
+  return null;
+}
+
+function isYouTubePage() {
+  const hostname = window.location.hostname.replace(/^www\./, '');
+  return hostname === 'youtube.com' || hostname === 'm.youtube.com' || hostname === 'youtu.be';
+}
+
+function currentYouTubeSelectedPlaylistVideo() {
+  const selectedItem = document.querySelector('ytd-playlist-panel-video-renderer[selected], ytd-playlist-panel-video-renderer[is-active]');
+  const link = selectedItem?.querySelector('a#wc-endpoint[href], a[href*="/watch?"]');
+  const href = link?.getAttribute('href');
+  if (!href) return null;
+
+  const url = new URL(href, window.location.origin);
+  const videoID = url.searchParams.get('v');
+  if (!videoID) return null;
+
+  return {
+    url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoID)}`,
+    title: selectedPlaylistTitle(selectedItem) || youtubePageTitle()
+  };
+}
+
+function selectedPlaylistTitle(selectedItem) {
+  return (
+    selectedItem.querySelector('#video-title')?.textContent ||
+    selectedItem.querySelector('[id="video-title"]')?.textContent ||
+    ''
+  ).trim();
+}
+
+function currentYouTubePlayerVideo() {
+  const player = document.querySelector('#movie_player');
+  const data = player?.getVideoData?.();
+  const videoID = data?.video_id || data?.videoId;
+  if (!videoID) return null;
+  return {
+    url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoID)}`,
+    title: (data.title || youtubePageTitle()).trim()
+  };
+}
+
+function youtubePageTitle() {
+  return (
+    document.querySelector('ytd-watch-metadata h1 yt-formatted-string')?.textContent ||
+    document.querySelector('h1.ytd-watch-metadata')?.textContent ||
+    document.title.replace(/\s+-\s+YouTube$/, '') ||
+    ''
+  ).trim();
 }
 
 function showButton() {
@@ -105,13 +236,15 @@ function hideButton() {
 }
 
 async function handleDownloadClick() {
+  await refreshYouTubeCandidateForClick();
   if (!candidate) return;
+  if (!candidate.policy.isAllowedByDomainPolicy) return;
   if (shouldAskQuality(candidate.media)) {
     const options = await qualityOptionsFor(candidate.media);
     showQualityDialog(options);
     return;
   }
-  sendToApp('best');
+  await sendToApp('best');
 }
 
 function shouldAskQuality(media) {
@@ -150,27 +283,32 @@ async function parseHlsQualities(url) {
 }
 
 function showQualityDialog(options) {
-  if (qualityDialog) qualityDialog.remove();
+  closeQualityDialog();
 
   qualityDialog = document.createElement('div');
   qualityDialog.id = 'macvidcatch-quality-dialog';
   qualityDialog.innerHTML = `
     <div class="macvidcatch-quality-card" role="dialog" aria-modal="true" aria-label="Choose video quality">
       <div class="macvidcatch-quality-title">Pilih kualitas video</div>
-      <div class="macvidcatch-quality-subtitle">MacVidCatch akan membuka aplikasi setelah kualitas dipilih.</div>
+      <div class="macvidcatch-quality-subtitle">Pastikan video yang akan diunduh sudah benar.</div>
+      <div class="macvidcatch-quality-media"></div>
       <div class="macvidcatch-quality-options"></div>
       <div class="macvidcatch-quality-actions"><button type="button" data-cancel="true">Cancel</button></div>
     </div>`;
+
+  const mediaContainer = qualityDialog.querySelector('.macvidcatch-quality-media');
+  mediaContainer.appendChild(mediaDetailRow('File', mediaDisplayName()));
+  mediaContainer.appendChild(mediaDetailRow('URL', candidate?.media?.url || window.location.href));
 
   const optionsContainer = qualityDialog.querySelector('.macvidcatch-quality-options');
   for (const option of options) {
     const optionButton = document.createElement('button');
     optionButton.type = 'button';
-    optionButton.textContent = option.label;
-    optionButton.addEventListener('click', () => {
+    optionButton.textContent = `Download ${option.label}`;
+    optionButton.addEventListener('click', async () => {
       qualityDialog?.remove();
       qualityDialog = null;
-      sendToApp(option.value);
+      await sendToApp(option.value);
     });
     optionsContainer.appendChild(optionButton);
   }
@@ -188,12 +326,40 @@ function showQualityDialog(options) {
   document.documentElement.appendChild(qualityDialog);
 }
 
-function sendToApp(quality) {
+function closeQualityDialog() {
+  if (!qualityDialog) return;
+  qualityDialog.remove();
+  qualityDialog = null;
+}
+
+function mediaDetailRow(label, value) {
+  const row = document.createElement('div');
+  row.className = 'macvidcatch-quality-media-row';
+
+  const labelElement = document.createElement('strong');
+  labelElement.textContent = `${label}: `;
+  row.appendChild(labelElement);
+
+  const valueElement = document.createElement('span');
+  valueElement.textContent = value || '-';
+  row.appendChild(valueElement);
+
+  return row;
+}
+
+function mediaDisplayName() {
+  const title = candidate?.media?.title || document.title || '';
+  return title.replace(/\s+-\s+YouTube$/, '').trim() || candidate?.media?.url || 'Unknown media';
+}
+
+async function sendToApp(quality) {
+  await refreshYouTubeCandidateForClick();
   if (!candidate) return;
+  if (!candidate.policy.isAllowedByDomainPolicy) return;
   const params = new URLSearchParams({
     url: candidate.media.url,
     pageUrl: window.location.href,
-    title: candidate.media.title || document.title || '',
+    title: mediaDisplayName(),
     mimeType: candidate.media.mimeType || '',
     quality: quality || candidate.media.quality || 'best',
     browser: 'chrome'
