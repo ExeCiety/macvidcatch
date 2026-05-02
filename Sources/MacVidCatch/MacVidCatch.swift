@@ -31,7 +31,7 @@ final class DeepLinkRouter: ObservableObject {
     func handle(_ url: URL, store: AppStore, engine: DownloadEngine?) async {
         guard url.scheme == "macvidcatch", url.host == "download", let components = URLComponents(url: url, resolvingAgainstBaseURL: false), let value = components.queryItems?.first(where: { $0.name == "url" })?.value, let downloadURL = URL(string: value) else { return }
         let pageURL = components.queryItems?.first(where: { $0.name == "pageUrl" })?.value.flatMap(URL.init(string:))
-        let title = components.queryItems?.first(where: { $0.name == "title" })?.value
+        let title = components.queryItems?.first(where: { $0.name == "title" })?.value?.replacingOccurrences(of: "+", with: " ")
         let mimeType = components.queryItems?.first(where: { $0.name == "mimeType" })?.value
         let browser = components.queryItems?.first(where: { $0.name == "browser" })?.value
         let quality = components.queryItems?.first(where: { $0.name == "quality" })?.value

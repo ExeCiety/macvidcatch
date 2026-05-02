@@ -426,8 +426,12 @@ function mediaDetailRow(label, value) {
 }
 
 function mediaDisplayName() {
-  const title = candidate?.media?.title || document.title || '';
+  const title = isHlsMedia(candidate?.media) ? pageDisplayTitle() : candidate?.media?.title || pageDisplayTitle();
   return title.replace(/\s+-\s+YouTube$/, '').trim() || candidate?.media?.url || 'Unknown media';
+}
+
+function pageDisplayTitle() {
+  return document.title || document.querySelector('meta[property="og:title"]')?.content || document.querySelector('h1')?.textContent || '';
 }
 
 async function sendToApp(quality) {
