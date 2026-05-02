@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MacVidCatch Extension Settings</title>
+  <style>
+    body { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; max-width: 720px; color: #1f2937; }
+    h1 { font-size: 22px; margin: 0 0 16px; }
+    label { display: block; font-weight: 600; margin-top: 16px; }
+    textarea { width: 100%; min-height: 80px; margin-top: 6px; font: inherit; }
+    .row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+    .hint { color: #6b7280; font-size: 12px; margin-top: 4px; }
+    button { margin-top: 18px; padding: 8px 14px; }
+    #status { margin-left: 10px; color: #047857; }
+  </style>
+</head>
+<body>
+  <h1>MacVidCatch Extension Settings</h1>
+  <div class="row">
+    <input id="showFloatingButton" type="checkbox">
+    <label for="showFloatingButton" style="margin:0">Show floating download button</label>
+  </div>
+  <label for="blocklist">Blocklist domains</label>
+  <textarea id="blocklist" placeholder="example.com&#10;cdn.example.net"></textarea>
+  <div class="hint">One domain per line. Matching uses hostname contains.</div>
+  <div class="row">
+    <input id="allowlistMode" type="checkbox">
+    <label for="allowlistMode" style="margin:0">Only allow domains in allowlist</label>
+  </div>
+  <label for="allowlist">Allowlist domains</label>
+  <textarea id="allowlist" placeholder="youtube.com&#10;example.com"></textarea>
+  <div class="hint">Only used when allowlist mode is enabled.</div>
+  <button id="save" type="button">Save</button><span id="status"></span>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -15,13 +15,13 @@ MacVidCatch is a native macOS 13+ Internet Download Manager with browser integra
 ## Current Status
 
 - SwiftUI macOS app with a downloads list, status filters, manual download dialog, Settings, menu bar controls, and a button to open the logs folder.
-- Native HTTP/HTTPS downloader with metadata probing via `HEAD`, HTTP status validation, retry, partial-file pause/resume, partial cleanup, final file-size validation, and segmented downloads when the server supports `Accept-Ranges: bytes`.
+- Native HTTP/HTTPS downloader with metadata probing via `HEAD`, HTTP status validation, retry, buffered partial-file pause/resume, partial cleanup, final file-size validation, and segmented downloads that require `206 Partial Content` responses.
 - Download queue with global parallel download limits and per-file connection limits.
 - Basic global speed limiting for the native single-download path.
 - Local persistence for jobs and settings under Application Support.
 - Custom URL scheme integration via `macvidcatch://download?...` for URLs sent by browser extensions.
 - Browser-extension downloads, HLS `.m3u8`, and YouTube URLs are routed through `yt-dlp`; normal manual direct HTTP downloads continue to use the native downloader unless the URL or MIME type indicates HLS.
-- Chrome Manifest V3 and Firefox WebExtensions connectors for detecting direct media, HLS playlists, YouTube pages, quality selection, and opening the app via the URL scheme.
+- Chrome Manifest V3 and Firefox WebExtensions connectors for detecting direct media, HLS playlists, YouTube pages, quality selection, extension Options, and opening the app via the URL scheme.
 - Diagnostic logging for app/download lifecycle, external tool commands, exit status, and per-job `yt-dlp`/`ffmpeg` output.
 - Local scripts for building the `.app` bundle and creating a DMG.
 
@@ -83,6 +83,8 @@ The native path is used for normal manual downloads.
 - The app sends a `HEAD` request to resolve the file name, file size, final URL, and resume support.
 - If the file supports range requests, is larger than 1 MiB, and `maxConnectionsPerFile > 1`, the app uses segmented download.
 - Otherwise, the app uses a single stream download with a partial file.
+- Resume appends to an existing partial file only when the server confirms a range response with `206 Partial Content`; otherwise the partial is restarted safely.
+- Segmented downloads also require `206 Partial Content` for every segment to avoid merging full-file responses from servers that ignore `Range`.
 - Partial files are stored under the temporary directory `MacVidCatch/<job-id>/` and cleaned up on cancel/delete/retry.
 - The final file is validated against `Content-Length` when the size is known.
 
@@ -125,6 +127,7 @@ Query parameters used by the app:
 3. Choose **Load unpacked**.
 4. Select `BrowserExtension/chrome`.
 5. When direct media, HLS, or a YouTube page is detected, use the MacVidCatch floating button.
+6. To configure the floating button, blocklist, allowlist, or allowlist mode, open the extension **Options** page from `chrome://extensions`.
 
 ### Firefox Extension
 
@@ -132,6 +135,7 @@ Query parameters used by the app:
 2. Choose **Load Temporary Add-on…**.
 3. Select `BrowserExtension/firefox/manifest.json`.
 4. When direct media, HLS, or a YouTube page is detected, use the MacVidCatch floating button.
+5. To configure the floating button, blocklist, allowlist, or allowlist mode, open the extension **Options** page from `about:addons` or the temporary add-on details page.
 
 ## Settings
 
@@ -145,13 +149,19 @@ Available app settings:
 - Retry count and retry interval.
 - Global speed limit in bytes/second; `0` means unlimited.
 - Notifications toggle.
-- Floating button preference toggle.
 - Browser cookies/profile path.
-- Domain allowlist and blocklist.
+- App-side domain blocklist.
+
+Available browser extension settings, configured from the extension Options page:
+
+- Show or hide the floating download button.
+- Blocklist domains.
+- Allowlist domains.
+- Allowlist mode, which only permits domains in the allowlist.
 
 `Browser cookies/profile path` accepts a `Profiles` folder, a specific profile folder, a `cookies.sqlite` file, or a Chromium-style profile folder containing `Cookies`. Default detection checks common Firefox, Firefox Developer Edition, LibreWolf, Waterfox, Chrome, Chromium, Edge, and Brave locations.
 
-Note: extension allowlist/blocklist settings are applied before a candidate is sent to the app. On the app side, the currently enforced policy during enqueue is the domain blocklist.
+Note: extension settings live in browser extension storage and app settings live in macOS Application Support. The app cannot directly modify browser extension storage, so browser-facing controls are intentionally kept in the extension Options page.
 
 ## Logging And Data
 
@@ -183,7 +193,16 @@ Command logs redact common sensitive URL query parameters such as `token`, `sign
 
 ## Validation
 
-There is currently no dedicated test suite. Validate code changes with:
+Run the lightweight utility checks and release build from `app/`:
+
+```bash
+./scripts/run_unit_checks.sh
+swift build -c release
+```
+
+The check script covers small pure utility behavior that can run in this Command Line Tools environment. A full XCTest/Swift Testing target is not currently configured.
+
+For build-only validation, run:
 
 ```bash
 swift build -c release

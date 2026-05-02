@@ -16,7 +16,7 @@ browser.webRequest.onHeadersReceived.addListener((details) => {
   const isDrm = drmHeaders.some(name => headers[name]) || /keyformat|widevine|playready|fairplay/i.test(JSON.stringify(headers));
   if (!isMedia || details.tabId < 0) return;
 
-  browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false }).then(config => {
+  browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false, showFloatingButton: true }).then(config => {
     const blocked = config.blocklist.some(domain => domain && url.hostname.includes(domain));
     const allowed = !config.allowlistMode || config.allowlist.some(domain => domain && url.hostname.includes(domain));
     return sendMediaCandidate(details.tabId, url, contentType, isDrm, allowed && !blocked);
@@ -29,7 +29,7 @@ async function sendMediaCandidate(tabId, url, contentType, isDrm, isAllowedByDom
     : { isMaster: false, qualityOptions: [] };
 
   return browser.tabs.sendMessage(tabId, {
-    type: 'MDMPRO_MEDIA_CANDIDATE',
+    type: 'MACVIDCATCH_MEDIA_CANDIDATE',
     media: {
       url: url.href,
       mimeType: contentType,

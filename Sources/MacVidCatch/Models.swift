@@ -101,16 +101,6 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     }
 }
 
-struct DownloadSegment: Identifiable, Codable, Equatable {
-    enum Status: String, Codable { case pending, downloading, completed, failed }
-    var id: UUID = UUID()
-    var jobId: UUID
-    var startByte: Int64
-    var endByte: Int64
-    var downloadedBytes: Int64 = 0
-    var status: Status = .pending
-}
-
 struct AppSettings: Codable, Equatable {
     var defaultDownloadFolder: String = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? NSHomeDirectory()
     var maxSimultaneousDownloads: Int = 2
@@ -119,7 +109,6 @@ struct AppSettings: Codable, Equatable {
     var retryIntervalSeconds: Double = 2
     var globalSpeedLimitBytesPerSecond: Int64 = 0
     var showNotifications: Bool = true
-    var showFloatingButton: Bool = true
     var firefoxCookiesPath: String = defaultFirefoxCookiesPath()
     var domainAllowlist: [String] = []
     var domainBlocklist: [String] = []
@@ -135,7 +124,6 @@ struct AppSettings: Codable, Equatable {
         retryIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .retryIntervalSeconds) ?? retryIntervalSeconds
         globalSpeedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .globalSpeedLimitBytesPerSecond) ?? globalSpeedLimitBytesPerSecond
         showNotifications = try container.decodeIfPresent(Bool.self, forKey: .showNotifications) ?? showNotifications
-        showFloatingButton = try container.decodeIfPresent(Bool.self, forKey: .showFloatingButton) ?? showFloatingButton
         firefoxCookiesPath = migratedCookiesProfilePath(try container.decodeIfPresent(String.self, forKey: .firefoxCookiesPath))
         domainAllowlist = try container.decodeIfPresent([String].self, forKey: .domainAllowlist) ?? domainAllowlist
         domainBlocklist = try container.decodeIfPresent([String].self, forKey: .domainBlocklist) ?? domainBlocklist
@@ -169,16 +157,4 @@ func defaultFirefoxCookiesPath() -> String {
             || fileManager.fileExists(atPath: URL(fileURLWithPath: path).appendingPathComponent("Cookies").path)
             || ((try? fileManager.contentsOfDirectory(atPath: path))?.isEmpty == false)
     } ?? "~/Library/Application Support/Firefox/Profiles"
-}
-
-struct ExtensionPayload: Codable {
-    struct Media: Codable { var url: URL; var mimeType: String?; var title: String?; var quality: String?; var isDrmProtected: Bool }
-    struct Policy: Codable { var isAllowedByUser: Bool; var isAllowedByDomainPolicy: Bool }
-    var type: String
-    var version: String
-    var source: String
-    var browser: String
-    var pageUrl: URL?
-    var media: Media
-    var policy: Policy
 }

@@ -186,24 +186,29 @@ final class DownloadEngine: NSObject, ObservableObject {
         if existing > 0 && job.supportsResume { request.setValue("bytes=\(existing)-", forHTTPHeaderField: "Range") }
         let (stream, response) = try await URLSession.shared.bytes(for: request)
         try validateHTTP(response)
-        if existing == 0 { FileManager.default.createFile(atPath: partial.path, contents: nil) }
+        let shouldAppend = existing > 0 && job.supportsResume && httpStatusCode(response) == 206
+        if existing == 0 || !shouldAppend { FileManager.default.createFile(atPath: partial.path, contents: nil) }
         let handle = try FileHandle(forWritingTo: partial)
-        try handle.seekToEnd()
-        var downloaded = existing; var lastTick = Date(); var tickBytes: Int64 = 0
+        defer { try? handle.close() }
+        if shouldAppend { try handle.seekToEnd() } else { try handle.truncate(atOffset: 0) }
+        var downloaded = shouldAppend ? existing : 0; var lastTick = Date(); var tickBytes: Int64 = 0
+        var buffer = Data(); buffer.reserveCapacity(64 * 1024)
         for try await byte in stream {
             try Task.checkCancellation()
-            try handle.write(contentsOf: [byte])
+            buffer.append(byte)
             downloaded += 1; tickBytes += 1
+            if buffer.count >= 64 * 1024 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
             if tickBytes >= 64 * 1024 { await updateProgress(job.id, downloaded: downloaded, tickBytes: tickBytes, lastTick: &lastTick); tickBytes = 0 }
         }
-        try handle.close()
+        if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+        if tickBytes > 0 { await updateProgress(job.id, downloaded: downloaded, tickBytes: tickBytes, lastTick: &lastTick, force: true) }
         try mergePartials(partials: [partial], destination: URL(fileURLWithPath: job.destinationPath), expectedBytes: job.totalBytes)
     }
 
     private func segmentedDownload(job: DownloadJob) async throws {
         let count = min(max(1, store.settings.maxConnectionsPerFile), 8)
         let segmentSize = Int64(ceil(Double(job.totalBytes) / Double(count)))
-        try await withThrowingTaskGroup(of: URL.self) { group in
+        try await withThrowingTaskGroup(of: (URL, Int64).self) { group in
             for index in 0..<count {
                 let start = Int64(index) * segmentSize
                 let end = min(job.totalBytes - 1, start + segmentSize - 1)
@@ -211,31 +216,46 @@ final class DownloadEngine: NSObject, ObservableObject {
                 group.addTask { try await self.downloadSegment(job: job, index: index, start: start, end: end) }
             }
             var urls: [URL] = []
-            for try await url in group { urls.append(url) }
+            var downloaded: Int64 = 0; var lastTick = Date()
+            for try await (url, bytes) in group {
+                urls.append(url)
+                downloaded += bytes
+                await updateProgress(job.id, downloaded: downloaded, tickBytes: bytes, lastTick: &lastTick, force: true)
+            }
             let ordered = urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
             try mergePartials(partials: ordered, destination: URL(fileURLWithPath: job.destinationPath), expectedBytes: job.totalBytes)
         }
     }
 
-    private nonisolated func downloadSegment(job: DownloadJob, index: Int, start: Int64, end: Int64) async throws -> URL {
+    private nonisolated func downloadSegment(job: DownloadJob, index: Int, start: Int64, end: Int64) async throws -> (URL, Int64) {
         let url = partialURL(for: job.id, suffix: String(format: "%03d", index))
         let existing = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
-        if existing >= end - start + 1 { return url }
+        let segmentBytes = end - start + 1
+        if existing >= segmentBytes { return (url, segmentBytes) }
         var request = URLRequest(url: job.finalUrl ?? job.sourceUrl)
         request.setValue("bytes=\(start + existing)-\(end)", forHTTPHeaderField: "Range")
         let (stream, response) = try await URLSession.shared.bytes(for: request)
-        try validateHTTP(response)
+        try validatePartialHTTP(response)
         FileManager.default.createFile(atPath: url.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: url); try handle.seekToEnd()
-        for try await byte in stream { try Task.checkCancellation(); try handle.write(contentsOf: [byte]) }
-        try handle.close()
-        return url
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        var buffer = Data(); buffer.reserveCapacity(64 * 1024)
+        var downloaded = existing
+        for try await byte in stream {
+            try Task.checkCancellation()
+            buffer.append(byte)
+            downloaded += 1
+            if buffer.count >= 64 * 1024 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
+        }
+        if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+        return (url, downloaded)
     }
 
-    private func updateProgress(_ id: UUID, downloaded: Int64, tickBytes: Int64, lastTick: inout Date) async {
+    private func updateProgress(_ id: UUID, downloaded: Int64, tickBytes: Int64, lastTick: inout Date, force: Bool = false) async {
         let now = Date(); let elapsed = now.timeIntervalSince(lastTick)
-        guard elapsed >= 0.5 else { return }
-        let speed = Int64(Double(tickBytes) / elapsed)
+        guard force || elapsed >= 0.5 else { return }
+        let speed = Int64(Double(tickBytes) / max(elapsed, 0.001))
         if store.settings.globalSpeedLimitBytesPerSecond > 0, speed > store.settings.globalSpeedLimitBytesPerSecond {
             let delay = Double(tickBytes) / Double(store.settings.globalSpeedLimitBytesPerSecond) - elapsed
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
@@ -724,6 +744,14 @@ private func validateHTTP(_ response: URLResponse) throws {
     guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) || http.statusCode == 206 else { throw URLError(.badServerResponse) }
 }
 
+private func validatePartialHTTP(_ response: URLResponse) throws {
+    guard let http = response as? HTTPURLResponse, http.statusCode == 206 else { throw URLError(.badServerResponse) }
+}
+
+private func httpStatusCode(_ response: URLResponse) -> Int? {
+    (response as? HTTPURLResponse)?.statusCode
+}
+
 private func partialURL(for id: UUID, suffix: String) -> URL {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MacVidCatch", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -732,10 +760,15 @@ private func partialURL(for id: UUID, suffix: String) -> URL {
 
 private func mergePartials(partials: [URL], destination: URL, expectedBytes: Int64) throws {
     let tmp = destination.appendingPathExtension("download")
+    try? FileManager.default.removeItem(at: tmp)
     FileManager.default.createFile(atPath: tmp.path, contents: nil)
     let output = try FileHandle(forWritingTo: tmp)
-    for partial in partials { let input = try FileHandle(forReadingFrom: partial); try output.write(contentsOf: input.readDataToEndOfFile()); try input.close() }
-    try output.close()
+    defer { try? output.close() }
+    for partial in partials {
+        let input = try FileHandle(forReadingFrom: partial)
+        defer { try? input.close() }
+        try output.write(contentsOf: input.readDataToEndOfFile())
+    }
     if expectedBytes > 0 {
         let actual = (try FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? Int64) ?? 0
         guard actual == expectedBytes else { throw NSError(domain: "Download", code: 1, userInfo: [NSLocalizedDescriptionKey: "Final file size does not match."]) }

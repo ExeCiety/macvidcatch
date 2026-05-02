@@ -8,7 +8,7 @@ const hlsAnalysisCache = new Map();
 const recentHlsCandidates = [];
 
 browser.runtime.onMessage.addListener(message => {
-  if (message.type !== 'MDMPRO_MEDIA_CANDIDATE') return;
+  if (message.type !== 'MACVIDCATCH_MEDIA_CANDIDATE') return;
   if (isYouTubePage() && message.media?.mimeType !== 'application/x-macvidcatch-youtube') {
     scheduleYouTubeDetection();
     return;
@@ -38,7 +38,7 @@ function setCandidate(message, options = {}) {
     showNotice('This media cannot be downloaded because it is protected or restricted.');
     return;
   }
-  showButton();
+  showButtonIfEnabled();
 
   if (isHlsMedia(candidate.media)) promoteMasterPlaylistCandidate(candidate);
 }
@@ -78,7 +78,7 @@ function detectYouTubePageCandidate() {
   if (!video || video.url === lastYouTubeUrl) return;
   lastYouTubeUrl = video.url;
 
-  browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false }).then(config => {
+  browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false, showFloatingButton: true }).then(config => {
     if (currentYouTubeVideo()?.url !== video.url) return;
     setCandidate(youtubeCandidateMessage(video, isAllowedByDomainPolicy(config)), { force: true });
   }).catch(() => {});
@@ -89,12 +89,18 @@ async function refreshYouTubeCandidateForClick() {
   const video = currentYouTubeVideo();
   if (!video || candidate?.media?.url === video.url) return;
   lastYouTubeUrl = video.url;
-  const config = await browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false });
+  const config = await browser.storage.local.get({ blocklist: [], allowlist: [], allowlistMode: false, showFloatingButton: true });
   candidate = youtubeCandidateMessage(video, isAllowedByDomainPolicy(config));
   closeQualityDialog();
-  if (candidate.policy.isAllowedByDomainPolicy) showButton();
+  if (candidate.policy.isAllowedByDomainPolicy) showButtonIfEnabled();
   else hideButton();
 }
+
+browser.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !changes.showFloatingButton) return;
+  if (changes.showFloatingButton.newValue === false) hideButton();
+  else if (candidate && !candidate.media.isDrmProtected && candidate.policy.isAllowedByDomainPolicy) showButton();
+});
 
 function installYouTubeSpaNavigationHooks() {
   window.addEventListener('yt-navigate-start', scheduleYouTubeDetection, true);
@@ -136,7 +142,7 @@ function isAllowedByDomainPolicy(config) {
 
 function youtubeCandidateMessage(video, isAllowedByDomainPolicy) {
   return {
-    type: 'MDMPRO_MEDIA_CANDIDATE',
+    type: 'MACVIDCATCH_MEDIA_CANDIDATE',
     media: {
       url: video.url,
       mimeType: 'application/x-macvidcatch-youtube',
@@ -239,6 +245,13 @@ function showButton() {
     document.documentElement.appendChild(button);
   }
   button.style.display = 'block';
+}
+
+function showButtonIfEnabled() {
+  browser.storage.local.get({ showFloatingButton: true }).then(config => {
+    if (config.showFloatingButton) showButton();
+    else hideButton();
+  });
 }
 
 function hideButton() {
