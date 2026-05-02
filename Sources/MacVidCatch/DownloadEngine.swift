@@ -150,7 +150,8 @@ final class DownloadEngine: NSObject, ObservableObject {
                 guard !Task.isCancelled else { return }
                 AppLogger.log("Completed job id=\(jobID.uuidString)", jobID: jobID)
                 store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0; $0.externalProgress = 1; $0.isConverting = false }
-                notify(title: "Download complete", body: latest.fileName)
+                let completedJob = store.jobs.first(where: { $0.id == jobID }) ?? latest
+                notify(title: "Download complete", body: completedJob.fileName, filePath: completedJob.destinationPath)
                 return
             } catch {
                 if pausedIDs.contains(jobID) || Task.isCancelled { return }
@@ -471,10 +472,16 @@ final class DownloadEngine: NSObject, ObservableObject {
         return (outputText, process.terminationStatus)
     }
 
-    private func notify(title: String, body: String) {
+    private func notify(title: String, body: String, filePath: String? = nil) {
         guard store.settings.showNotifications else { return }
-        let content = UNMutableNotificationContent(); content.title = title; content.body = body
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if let filePath { content.userInfo = ["filePath": filePath] }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
+            if let error { AppLogger.log("Notification delivery failed: \(error.localizedDescription)") }
+        }
     }
 }
 

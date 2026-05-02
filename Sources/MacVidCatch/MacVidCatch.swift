@@ -6,6 +6,7 @@ struct MacVidCatchApp: App {
     @StateObject private var store = AppStore()
     @StateObject private var router = DeepLinkRouter()
     @State private var engine: DownloadEngine?
+    private let notificationDelegate = AppNotificationDelegate()
 
     var body: some Scene {
         Window("MacVidCatch", id: "main") {
@@ -23,7 +24,25 @@ struct MacVidCatchApp: App {
         }
     }
 
-    private func requestNotifications() { UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in } }
+    private func requestNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = notificationDelegate
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error { AppLogger.log("Notification authorization failed: \(error.localizedDescription)") }
+            AppLogger.log("Notification authorization granted=\(granted)")
+        }
+    }
+}
+
+final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let filePath = response.notification.request.content.userInfo["filePath"] as? String else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: filePath)])
+    }
 }
 
 @MainActor
