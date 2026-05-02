@@ -474,14 +474,7 @@ final class DownloadEngine: NSObject, ObservableObject {
 
     private func notify(title: String, body: String, filePath: String? = nil) {
         guard store.settings.showNotifications else { return }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        if let filePath { content.userInfo = ["filePath": filePath] }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
-            if let error { AppLogger.log("Notification delivery failed: \(error.localizedDescription)") }
-        }
+        AppNotifications.deliver(title: title, body: body, filePath: filePath)
     }
 }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+@preconcurrency import UserNotifications
 
 struct ContentView: View {
     @ObservedObject var store: AppStore
@@ -205,10 +206,25 @@ struct NewDownloadView: View {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var settings: AppSettings
+    @State private var notificationStatus = "Checking…"
+    @State private var notificationMessage: String?
 
     var body: some View {
         Form {
-            Section("General") { TextField("Default folder", text: $settings.defaultDownloadFolder); Toggle("Show notifications", isOn: $settings.showNotifications) }
+            Section("General") {
+                TextField("Default folder", text: $settings.defaultDownloadFolder)
+                Toggle("Show notifications", isOn: $settings.showNotifications)
+                HStack {
+                    Text("macOS permission: \(notificationStatus)").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Enable Notifications", action: requestNotificationPermission)
+                    Button("Send Test", action: sendTestNotification)
+                        .disabled(!settings.showNotifications)
+                }
+                if let notificationMessage {
+                    Text(notificationMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Download") {
                 Stepper("Max simultaneous downloads: \(settings.maxSimultaneousDownloads)", value: $settings.maxSimultaneousDownloads, in: 1...10)
                 Stepper("Connections per file: \(settings.maxConnectionsPerFile)", value: $settings.maxConnectionsPerFile, in: 1...8)
@@ -227,7 +243,53 @@ struct SettingsView: View {
             }
             HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(24).frame(width: 640)
+        .padding(24).frame(width: 640).onAppear(perform: refreshNotificationStatus)
+    }
+
+    private func refreshNotificationStatus() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let status = Self.notificationStatusTitle(settings.authorizationStatus)
+            DispatchQueue.main.async { notificationStatus = status }
+        }
+    }
+
+    private func requestNotificationPermission() {
+        notificationMessage = "Requesting notification permission…"
+        AppNotifications.requestAuthorization { granted, status, errorMessage in
+            Task { @MainActor in
+                notificationStatus = Self.notificationStatusTitle(status)
+                notificationMessage = granted ? "Notifications are allowed." : "Notifications are not allowed. \(errorMessage ?? "If denied, enable them in System Settings.")"
+            }
+        }
+    }
+
+    private func sendTestNotification() {
+        notificationMessage = "Scheduling test notification…"
+        AppNotifications.requestAuthorization { granted, _, errorMessage in
+            guard granted else {
+                Task { @MainActor in
+                    refreshNotificationStatus()
+                    notificationMessage = "Test was not sent because notifications are not allowed. \(errorMessage ?? "")"
+                }
+                return
+            }
+            AppNotifications.deliver(title: "MacVidCatch notifications enabled", body: "You will be notified when downloads finish.", delay: 1)
+            Task { @MainActor in
+                refreshNotificationStatus()
+                notificationMessage = "Test notification scheduled. It should appear in about 1 second."
+            }
+        }
+    }
+
+    nonisolated private static func notificationStatusTitle(_ status: UNAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: "Not requested"
+        case .denied: "Denied"
+        case .authorized: "Allowed"
+        case .provisional: "Provisional"
+        case .ephemeral: "Ephemeral"
+        @unknown default: "Unknown"
+        }
     }
 
     private func chooseFirefoxCookiesPath() {

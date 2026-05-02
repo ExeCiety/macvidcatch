@@ -1,19 +1,19 @@
 import SwiftUI
-import UserNotifications
+@preconcurrency import UserNotifications
 
 @main
 struct MacVidCatchApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = AppStore()
     @StateObject private var router = DeepLinkRouter()
     @State private var engine: DownloadEngine?
-    private let notificationDelegate = AppNotificationDelegate()
 
     var body: some Scene {
         Window("MacVidCatch", id: "main") {
             ContentView(store: store, engine: engine)
                 .frame(minWidth: 980, minHeight: 620)
                 .onAppear {
-                    if engine == nil { engine = DownloadEngine(store: store); store.load(); requestNotifications() }
+                    if engine == nil { engine = DownloadEngine(store: store); store.load() }
                 }
                 .onOpenURL { url in Task { await router.handle(url, store: store, engine: engine) } }
         }
@@ -23,18 +23,14 @@ struct MacVidCatchApp: App {
             MenuBarView(store: store, engine: engine)
         }
     }
-
-    private func requestNotifications() {
-        let center = UNUserNotificationCenter.current()
-        center.delegate = notificationDelegate
-        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error { AppLogger.log("Notification authorization failed: \(error.localizedDescription)") }
-            AppLogger.log("Notification authorization granted=\(granted)")
-        }
-    }
 }
 
-final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppNotifications.configure(delegate: self)
+        AppNotifications.requestAuthorization()
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }
@@ -42,6 +38,39 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard let filePath = response.notification.request.content.userInfo["filePath"] as? String else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: filePath)])
+    }
+}
+
+enum AppNotifications {
+    static func configure(delegate: UNUserNotificationCenterDelegate) {
+        UNUserNotificationCenter.current().delegate = delegate
+    }
+
+    static func requestAuthorization(completion: (@Sendable (Bool, UNAuthorizationStatus, String?) -> Void)? = nil) {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            AppLogger.log("Notification authorization status=\(settings.authorizationStatus.rawValue)")
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+                if let error { AppLogger.log("Notification authorization failed: \(error.localizedDescription)") }
+                AppLogger.log("Notification authorization granted=\(granted)")
+                UNUserNotificationCenter.current().getNotificationSettings { updatedSettings in
+                    AppLogger.log("Notification authorization updatedStatus=\(updatedSettings.authorizationStatus.rawValue) alerts=\(updatedSettings.alertSetting.rawValue) sounds=\(updatedSettings.soundSetting.rawValue)")
+                    completion?(granted, updatedSettings.authorizationStatus, error?.localizedDescription)
+                }
+            }
+        }
+    }
+
+    static func deliver(title: String, body: String, filePath: String? = nil, delay: TimeInterval? = nil) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if let filePath { content.userInfo = ["filePath": filePath] }
+        let trigger = delay.map { UNTimeIntervalNotificationTrigger(timeInterval: max($0, 1), repeats: false) }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)) { error in
+            if let error { AppLogger.log("Notification delivery failed: \(error.localizedDescription)") }
+            else { AppLogger.log("Notification delivery scheduled title=\(title)") }
+        }
     }
 }
 
