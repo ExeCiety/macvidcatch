@@ -7,6 +7,7 @@ final class DownloadEngine: NSObject, ObservableObject {
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
     private var pausedIDs = Set<UUID>()
     private var activeProcesses: [UUID: Process] = [:]
+    private var lastYtDlpProgressUpdateAt: [UUID: Date] = [:]
 
     init(store: AppStore) { self.store = store }
 
@@ -68,6 +69,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         AppLogger.log("Pause job id=\(id.uuidString)", jobID: id)
         activeTasks[id]?.cancel(); activeTasks[id] = nil
         activeProcesses[id]?.terminate(); activeProcesses[id] = nil
+        lastYtDlpProgressUpdateAt[id] = nil
         store.update(id) { $0.status = .paused }
         startQueue()
     }
@@ -76,6 +78,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         AppLogger.log("Cancel job id=\(id.uuidString)", jobID: id)
         activeTasks[id]?.cancel(); activeTasks[id] = nil
         activeProcesses[id]?.terminate(); activeProcesses[id] = nil
+        lastYtDlpProgressUpdateAt[id] = nil
         store.update(id) { $0.status = .canceled }
         cleanupPartials(for: id)
         startQueue()
@@ -83,7 +86,7 @@ final class DownloadEngine: NSObject, ObservableObject {
 
     func retry(_ id: UUID) {
         AppLogger.log("Retry job id=\(id.uuidString)", jobID: id)
-        store.update(id) { $0.status = .queued; $0.downloadedBytes = 0; $0.errorCode = nil }
+        store.update(id) { $0.status = .queued; $0.downloadedBytes = 0; $0.errorCode = nil; $0.externalProgress = nil; $0.isConverting = false }
         cleanupPartials(for: id)
         startQueue()
     }
@@ -97,6 +100,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         AppLogger.log("Delete job id=\(id.uuidString) status=\(job.status.rawValue)", jobID: id)
         activeTasks[id]?.cancel(); activeTasks[id] = nil
         activeProcesses[id]?.terminate(); activeProcesses[id] = nil
+        lastYtDlpProgressUpdateAt[id] = nil
         pausedIDs.remove(id)
         cleanupPartials(for: id)
         store.remove(id)
@@ -109,6 +113,7 @@ final class DownloadEngine: NSObject, ObservableObject {
         for job in removable {
             activeTasks[job.id]?.cancel(); activeTasks[job.id] = nil
             activeProcesses[job.id]?.terminate(); activeProcesses[job.id] = nil
+            lastYtDlpProgressUpdateAt[job.id] = nil
             pausedIDs.remove(job.id)
             cleanupPartials(for: job.id)
         }
@@ -128,7 +133,7 @@ final class DownloadEngine: NSObject, ObservableObject {
                 try await download(job: latest)
                 guard !Task.isCancelled else { return }
                 AppLogger.log("Completed job id=\(jobID.uuidString)", jobID: jobID)
-                store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0; $0.externalProgress = 1 }
+                store.update(jobID) { $0.status = .completed; $0.downloadedBytes = max($0.downloadedBytes, $0.totalBytes); $0.speedBytesPerSecond = 0; $0.externalProgress = 1; $0.isConverting = false }
                 notify(title: "Download complete", body: latest.fileName)
                 return
             } catch {
@@ -136,7 +141,7 @@ final class DownloadEngine: NSObject, ObservableObject {
                 attempts += 1
                 AppLogger.log("Attempt \(attempts) failed for job id=\(jobID.uuidString): \(error.localizedDescription)", jobID: jobID)
                 if attempts > store.settings.retryCount {
-                    store.update(jobID) { $0.status = .failed; $0.errorCode = error.localizedDescription; $0.speedBytesPerSecond = 0 }
+                    store.update(jobID) { $0.status = .failed; $0.errorCode = error.localizedDescription; $0.speedBytesPerSecond = 0; $0.isConverting = false }
                     notify(title: "Download failed", body: error.localizedDescription)
                 } else {
                     try? await Task.sleep(nanoseconds: UInt64(store.settings.retryIntervalSeconds * Double(attempts) * 1_000_000_000))
@@ -295,8 +300,9 @@ final class DownloadEngine: NSObject, ObservableObject {
         pipe.fileHandleForReading.readabilityHandler = nil
         activeProcesses[jobID] = nil
         if let progress = outputCollector.flushProgress() {
-            applyYtDlpProgress(progress, jobID: jobID)
+            applyYtDlpProgress(progress, jobID: jobID, force: true)
         }
+        lastYtDlpProgressUpdateAt[jobID] = nil
         let output = outputCollector.data
         let outputText = String(data: output, encoding: .utf8) ?? ""
         AppLogger.writeJobOutput(outputText, jobID: jobID)
@@ -304,15 +310,20 @@ final class DownloadEngine: NSObject, ObservableObject {
         return (outputText, process.terminationStatus)
     }
 
-    private func applyYtDlpProgress(_ progress: YtDlpProgress, jobID: UUID) {
+    private func applyYtDlpProgress(_ progress: YtDlpProgress, jobID: UUID, force: Bool = false) {
+        let now = Date()
+        if !force, let lastUpdate = lastYtDlpProgressUpdateAt[jobID], now.timeIntervalSince(lastUpdate) < 0.75 {
+            return
+        }
+        lastYtDlpProgressUpdateAt[jobID] = now
         store.update(jobID) { job in
             job.externalProgress = progress.fraction
-            if let totalBytes = progress.totalBytes, totalBytes > 0 {
-                job.totalBytes = max(job.totalBytes, totalBytes)
-                job.downloadedBytes = Int64(Double(job.totalBytes) * progress.fraction)
-            }
             if let speedBytesPerSecond = progress.speedBytesPerSecond {
                 job.speedBytesPerSecond = speedBytesPerSecond
+            }
+            if let totalBytes = progress.totalBytes, totalBytes > 0 {
+                job.totalBytes = isHLSPlaylist(job.sourceUrl) ? totalBytes : max(job.totalBytes, totalBytes)
+                job.downloadedBytes = Int64(Double(job.totalBytes) * progress.fraction)
             }
         }
     }
@@ -393,6 +404,8 @@ final class DownloadEngine: NSObject, ObservableObject {
         let replacingBrokenMP4 = file.pathExtension.lowercased() == "mp4"
         let output = replacingBrokenMP4 ? uniqueFileURL(file.deletingPathExtension().appendingPathExtension("remux.mp4")) : uniqueFileURL(file.deletingPathExtension().appendingPathExtension("mp4"))
         let arguments = ["-f", "mpegts", "-i", file.path, "-c", "copy", "-bsf:a", "aac_adtstoasc", output.path]
+        store.update(job.id) { $0.isConverting = true; $0.speedBytesPerSecond = 0 }
+        defer { store.update(job.id) { $0.isConverting = false } }
         let result = try await runExternalTool(executable: executable, arguments: arguments, jobID: job.id, toolName: "ffmpeg")
         guard result.status == 0 else {
             let message = result.output.split(separator: "\n").filter { !String($0).trimmingCharacters(in: CharacterSet.whitespaces).isEmpty }.suffix(8).joined(separator: "\n").nilIfEmpty ?? "ffmpeg failed to convert TS to MP4 with code \(result.status)."

@@ -23,6 +23,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
     var errorCode: String?
     var speedBytesPerSecond: Int64 = 0
     var externalProgress: Double?
+    var isConverting: Bool = false
     var sourceBrowser: String?
     var preferredQuality: String?
 
@@ -47,6 +48,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         errorCode: String? = nil,
         speedBytesPerSecond: Int64 = 0,
         externalProgress: Double? = nil,
+        isConverting: Bool = false,
         sourceBrowser: String? = nil,
         preferredQuality: String? = nil
     ) {
@@ -68,6 +70,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         self.errorCode = errorCode
         self.speedBytesPerSecond = speedBytesPerSecond
         self.externalProgress = externalProgress
+        self.isConverting = isConverting
         self.sourceBrowser = sourceBrowser
         self.preferredQuality = preferredQuality
     }
@@ -92,6 +95,7 @@ struct DownloadJob: Identifiable, Codable, Equatable {
         errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
         speedBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .speedBytesPerSecond) ?? 0
         externalProgress = try container.decodeIfPresent(Double.self, forKey: .externalProgress)
+        isConverting = try container.decodeIfPresent(Bool.self, forKey: .isConverting) ?? false
         sourceBrowser = try container.decodeIfPresent(String.self, forKey: .sourceBrowser)
         preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality)
     }

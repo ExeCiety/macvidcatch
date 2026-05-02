@@ -53,7 +53,7 @@ struct DownloadListView: View {
                 }
             }
             .width(min: 220, ideal: 360)
-            TableColumn("Progress") { job in ProgressView(value: job.progress) { Text(job.status.title) }.frame(width: 150) }
+            TableColumn("Progress") { job in ProgressView(value: job.progress) { Text(job.progressTitle) }.frame(width: 150) }
                 .width(ideal: 170)
             TableColumn("Speed") { job in Text(formatBytes(job.speedBytesPerSecond) + "/s") }
                 .width(min: 72, ideal: 92, max: 120)
@@ -179,6 +179,10 @@ struct MenuBarView: View {
 private extension DownloadJob.Status {
     var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
     var icon: String { switch self { case .queued: "clock"; case .downloading: "arrow.down"; case .paused: "pause.circle"; case .completed: "checkmark.circle"; case .failed: "exclamationmark.triangle"; case .canceled: "xmark.circle" } }
+}
+
+private extension DownloadJob {
+    var progressTitle: String { isConverting && status == .downloading ? "Converting" : status.title }
 }
 
 func formatBytes(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
