@@ -5,6 +5,7 @@ struct ContentView: View {
     let engine: DownloadEngine?
     @State private var showingNewDownload = false
     @State private var showingSettings = false
+    @State private var bulkDeleteRequest: DeleteConfirmationRequest?
 
     var body: some View {
         NavigationSplitView {
@@ -29,19 +30,25 @@ struct ContentView: View {
             Button { showingNewDownload = true } label: { Label("New Download", systemImage: "plus") }
             Button { engine?.resumeAll() } label: { Label("Start All", systemImage: "play.fill") }
             Button { engine?.pauseAll() } label: { Label("Pause All", systemImage: "pause.fill") }
-            Button(role: .destructive) { engine?.deleteAllNotDownloading() } label: { Label("Delete All", systemImage: "trash") }
+            Button(role: .destructive) { bulkDeleteRequest = .bulk(count: store.jobs.filter { $0.status != .downloading }.count) } label: { Label("Delete All", systemImage: "trash") }
                 .disabled(!store.jobs.contains { $0.status != .downloading })
             Spacer()
             Button { NSWorkspace.shared.open(AppLogger.logsDirectory) } label: { Label("Logs", systemImage: "doc.text.magnifyingglass") }
             Button { showingSettings = true } label: { Label("Settings", systemImage: "gearshape") }
         }
         .padding()
+        .sheet(item: $bulkDeleteRequest) { request in
+            DeleteConfirmationView(request: request) { deletingFiles in
+                engine?.deleteAllNotDownloading(deletingFiles: deletingFiles)
+            }
+        }
     }
 }
 
 struct DownloadListView: View {
     @ObservedObject var store: AppStore
     let engine: DownloadEngine?
+    @State private var deleteRequest: DeleteConfirmationRequest?
 
     var body: some View {
         Table(store.visibleJobs) {
@@ -71,6 +78,11 @@ struct DownloadListView: View {
                 }
             }
         }
+        .sheet(item: $deleteRequest) { request in
+            DeleteConfirmationView(request: request) { deletingFile in
+                if let jobID = request.jobID { engine?.delete(jobID, deletingFile: deletingFile) }
+            }
+        }
     }
 
     @ViewBuilder private func actionButtons(for job: DownloadJob) -> some View {
@@ -80,7 +92,7 @@ struct DownloadListView: View {
             if job.status == .failed { iconButton("Retry", systemImage: "arrow.clockwise") { engine?.retry(job.id) } }
             if job.status == .downloading || job.status == .queued || job.status == .paused { iconButton("Cancel", systemImage: "xmark") { engine?.cancel(job.id) } }
             iconButton("Open Log", systemImage: "doc.text") { NSWorkspace.shared.open(AppLogger.jobLogURL(for: job.id)) }
-            iconButton("Delete", systemImage: "trash", role: .destructive) { engine?.delete(job.id) }
+            iconButton("Delete", systemImage: "trash", role: .destructive) { deleteRequest = .single(job) }
                 .disabled(job.status == .downloading)
         }
         .buttonStyle(.borderless)
@@ -92,6 +104,71 @@ struct DownloadListView: View {
                 .frame(width: 18, height: 18)
         }
         .help(title)
+    }
+}
+
+struct DeleteConfirmationRequest: Identifiable {
+    enum Kind { case single, bulk }
+
+    let id = UUID()
+    let kind: Kind
+    let jobID: UUID?
+    let fileName: String?
+    let count: Int
+
+    static func single(_ job: DownloadJob) -> DeleteConfirmationRequest {
+        DeleteConfirmationRequest(kind: .single, jobID: job.id, fileName: job.fileName, count: 1)
+    }
+
+    static func bulk(count: Int) -> DeleteConfirmationRequest {
+        DeleteConfirmationRequest(kind: .bulk, jobID: nil, fileName: nil, count: count)
+    }
+}
+
+struct DeleteConfirmationView: View {
+    @Environment(\.dismiss) private var dismiss
+    let request: DeleteConfirmationRequest
+    let onConfirm: (Bool) -> Void
+    @State private var deletingFiles = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title).font(.title2).fontWeight(.semibold)
+            Text(message).foregroundStyle(.secondary)
+            Toggle("Hapus file yang sudah terunduh juga", isOn: $deletingFiles)
+            Text("Jika aktif, file di disk akan ikut dihapus. Antrian yang sedang downloading tetap tidak akan dihapus.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Batal") { dismiss() }
+                Button(role: .destructive) {
+                    onConfirm(deletingFiles)
+                    dismiss()
+                } label: {
+                    Text(deletingFiles ? "Hapus Antrian + File" : "Hapus Antrian")
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+    }
+
+    private var title: String {
+        switch request.kind {
+        case .single: "Hapus antrian ini?"
+        case .bulk: "Hapus semua antrian?"
+        }
+    }
+
+    private var message: String {
+        switch request.kind {
+        case .single:
+            "Antrian \"\(request.fileName ?? "download")\" akan dihapus dari daftar."
+        case .bulk:
+            "\(request.count) antrian yang tidak sedang downloading akan dihapus dari daftar."
+        }
     }
 }
 

@@ -91,34 +91,50 @@ final class DownloadEngine: NSObject, ObservableObject {
         startQueue()
     }
 
-    func delete(_ id: UUID) {
+    func delete(_ id: UUID, deletingFile: Bool = false) {
         guard let job = store.jobs.first(where: { $0.id == id }) else { return }
         guard job.status != .downloading else {
             AppLogger.log("Delete ignored because job is downloading id=\(id.uuidString)", jobID: id)
             return
         }
-        AppLogger.log("Delete job id=\(id.uuidString) status=\(job.status.rawValue)", jobID: id)
+        AppLogger.log("Delete job id=\(id.uuidString) status=\(job.status.rawValue) deletingFile=\(deletingFile)", jobID: id)
         activeTasks[id]?.cancel(); activeTasks[id] = nil
         activeProcesses[id]?.terminate(); activeProcesses[id] = nil
         lastYtDlpProgressUpdateAt[id] = nil
         pausedIDs.remove(id)
         cleanupPartials(for: id)
+        if deletingFile { deleteDownloadedFile(for: job) }
         store.remove(id)
         startQueue()
     }
 
-    func deleteAllNotDownloading() {
+    func deleteAllNotDownloading(deletingFiles: Bool = false) {
         let removable = store.jobs.filter { $0.status != .downloading }
-        AppLogger.log("Delete all non-downloading jobs count=\(removable.count)")
+        AppLogger.log("Delete all non-downloading jobs count=\(removable.count) deletingFiles=\(deletingFiles)")
         for job in removable {
             activeTasks[job.id]?.cancel(); activeTasks[job.id] = nil
             activeProcesses[job.id]?.terminate(); activeProcesses[job.id] = nil
             lastYtDlpProgressUpdateAt[job.id] = nil
             pausedIDs.remove(job.id)
             cleanupPartials(for: job.id)
+            if deletingFiles { deleteDownloadedFile(for: job) }
         }
         store.removeAllNotDownloading()
         startQueue()
+    }
+
+    private func deleteDownloadedFile(for job: DownloadJob) {
+        let file = URL(fileURLWithPath: job.destinationPath)
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            AppLogger.log("Downloaded file not found for delete path=\(file.lastPathComponent)", jobID: job.id)
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: file)
+            AppLogger.log("Deleted downloaded file path=\(file.lastPathComponent)", jobID: job.id)
+        } catch {
+            AppLogger.log("Failed deleting downloaded file path=\(file.lastPathComponent) error=\(error.localizedDescription)", jobID: job.id)
+        }
     }
 
     func pauseAll() { store.jobs.filter { $0.status == .downloading }.forEach { pause($0.id) } }
